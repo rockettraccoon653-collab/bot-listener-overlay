@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rockett D&D Guild Panel</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #0d0b12;
+      color: #e8d8b0;
+      font-family: 'Georgia', 'Times New Roman', serif;
+      font-size: 13px;
+      min-height: 100vh;
+      padding: 8px;
+    }
+
+    /* ── Header ── */
+    .guild-header {
+      text-align: center;
+      padding: 10px 6px 8px;
+      border-bottom: 1px solid #3a2e18;
+      margin-bottom: 10px;
+    }
+
+    .guild-header h1 {
+      font-size: 16px;
+      color: #f0c050;
+      letter-spacing: 1px;
+      text-shadow: 0 0 8px rgba(240, 192, 80, 0.5);
+    }
+
+    .guild-header .subtitle {
+      font-size: 10px;
+      color: #8a7a50;
+      margin-top: 3px;
+      letter-spacing: 0.5px;
+    }
+
+    /* ── Sections ── */
+    .section {
+      background: rgba(20, 16, 10, 0.8);
+      border: 1px solid #3a2e18;
+      border-radius: 4px;
+      padding: 8px 10px;
+      margin-bottom: 8px;
+    }
+
+    .section-title {
+      font-size: 10px;
+      color: #8a7a50;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 6px;
+      border-bottom: 1px solid #2a2010;
+      padding-bottom: 4px;
+    }
+
+    /* ── Boss Section ── */
+    #boss-section .boss-name {
+      font-size: 15px;
+      color: #e84040;
+      font-weight: bold;
+      margin-bottom: 4px;
+      text-shadow: 0 0 6px rgba(232, 64, 64, 0.4);
+    }
+
+    #boss-section .boss-lore {
+      font-size: 11px;
+      color: #9a8a60;
+      font-style: italic;
+      margin-bottom: 6px;
+      line-height: 1.4;
+    }
+
+    .hp-bar-wrapper {
+      background: #1a1208;
+      border: 1px solid #3a2e18;
+      border-radius: 2px;
+      height: 10px;
+      margin-bottom: 4px;
+      overflow: hidden;
+    }
+
+    .hp-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #8b1010, #e84040);
+      transition: width 0.4s ease;
+      border-radius: 2px;
+    }
+
+    .hp-bar-fill.warning {
+      background: linear-gradient(90deg, #8b5510, #e88040);
+    }
+
+    .hp-bar-fill.critical {
+      background: linear-gradient(90deg, #8b8b10, #e8e040);
+    }
+
+    .hp-text {
+      font-size: 11px;
+      color: #b09050;
+      text-align: right;
+    }
+
+    .threshold-warning {
+      font-size: 11px;
+      color: #e84040;
+      text-align: center;
+      margin-top: 4px;
+      animation: pulse-warning 1s ease-in-out infinite alternate;
+    }
+
+    @keyframes pulse-warning {
+      from { opacity: 0.6; }
+      to { opacity: 1; }
+    }
+
+    /* ── Boss Idle (no boss) ── */
+    #boss-idle {
+      text-align: center;
+      padding: 8px 0;
+    }
+
+    #boss-idle .next-boss-label {
+      font-size: 11px;
+      color: #8a7a50;
+      margin-bottom: 4px;
+    }
+
+    #next-boss-timer {
+      font-size: 18px;
+      color: #f0c050;
+      font-weight: bold;
+      letter-spacing: 2px;
+      text-shadow: 0 0 8px rgba(240, 192, 80, 0.4);
+    }
+
+    #next-boss-flavor {
+      font-size: 10px;
+      color: #6a5a30;
+      font-style: italic;
+      margin-top: 3px;
+    }
+
+    /* ── XP Boost ── */
+    #xp-boost-section .boost-active {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #xp-boost-section .boost-badge {
+      background: linear-gradient(135deg, #4040e8, #8040e8);
+      color: #fff;
+      font-size: 13px;
+      font-weight: bold;
+      padding: 2px 8px;
+      border-radius: 3px;
+      letter-spacing: 1px;
+    }
+
+    #xp-boost-section .boost-timer {
+      font-size: 13px;
+      color: #b0a0f0;
+    }
+
+    #xp-boost-section .boost-inactive {
+      font-size: 11px;
+      color: #6a5a30;
+      font-style: italic;
+      text-align: center;
+      padding: 4px 0;
+    }
+
+    /* ── Leaderboard ── */
+    .leaderboard-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 3px 0;
+      border-bottom: 1px solid #1e1808;
+    }
+
+    .leaderboard-row:last-child {
+      border-bottom: none;
+    }
+
+    .leaderboard-rank {
+      font-size: 10px;
+      color: #6a5a30;
+      width: 18px;
+      flex-shrink: 0;
+    }
+
+    .leaderboard-rank.top1 { color: #f0c050; }
+    .leaderboard-rank.top2 { color: #c0c0c0; }
+    .leaderboard-rank.top3 { color: #c08040; }
+
+    .leaderboard-name {
+      flex: 1;
+      font-size: 12px;
+      color: #e8d8b0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .leaderboard-title {
+      font-size: 10px;
+      color: #9a80c0;
+      font-style: italic;
+      margin-left: 4px;
+      flex-shrink: 0;
+    }
+
+    .leaderboard-gold {
+      font-size: 12px;
+      color: #f0c050;
+      flex-shrink: 0;
+      margin-left: 8px;
+    }
+
+    .leaderboard-empty {
+      font-size: 11px;
+      color: #6a5a30;
+      font-style: italic;
+      text-align: center;
+      padding: 6px 0;
+    }
+
+    /* ── Recent Purchases ── */
+    .purchase-item {
+      padding: 3px 0;
+      border-bottom: 1px solid #1e1808;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .purchase-item:last-child {
+      border-bottom: none;
+    }
+
+    .purchase-who {
+      color: #9a80c0;
+      font-weight: bold;
+    }
+
+    .purchase-what {
+      color: #e8d8b0;
+    }
+
+    .purchase-type-class { color: #40b8e8; }
+    .purchase-type-weapon { color: #e88040; }
+    .purchase-type-title { color: #9a80c0; }
+    .purchase-type-effect { color: #40e880; }
+    .purchase-type-sound { color: #e8e040; }
+    .purchase-type-summon { color: #e84040; }
+    .purchase-type-xp { color: #8040e8; }
+
+    .purchases-empty {
+      font-size: 11px;
+      color: #6a5a30;
+      font-style: italic;
+      text-align: center;
+      padding: 4px 0;
+    }
+
+    /* ── Commands hint ── */
+    .commands-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3px 8px;
+    }
+
+    .cmd-item {
+      font-size: 10px;
+      color: #7a8a50;
+    }
+
+    .cmd-item span {
+      color: #b0c870;
+      font-style: italic;
+    }
+
+    /* ── Footer ── */
+    .guild-footer {
+      text-align: center;
+      font-size: 9px;
+      color: #3a2e18;
+      padding-top: 4px;
+      letter-spacing: 0.5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="guild-header">
+    <h1>⚔ Rockett's Guild</h1>
+    <div class="subtitle">D&D Tavern — Live</div>
+  </div>
+
+  <!-- Boss Section -->
+  <div class="section" id="boss-section" style="display:none;">
+    <div class="section-title">⚔ Boss Fight</div>
+    <div class="boss-name" id="boss-name">—</div>
+    <div class="boss-lore" id="boss-lore"></div>
+    <div class="hp-bar-wrapper">
+      <div class="hp-bar-fill" id="boss-hp-bar" style="width:100%"></div>
+    </div>
+    <div class="hp-text" id="boss-hp-text">— / — HP</div>
+    <div class="threshold-warning" id="boss-threshold" style="display:none;"></div>
+  </div>
+
+  <!-- Boss Idle (timer) -->
+  <div class="section" id="boss-idle">
+    <div class="section-title">☠ Next Boss</div>
+    <div class="next-boss-label">A new threat approaches in...</div>
+    <div id="next-boss-timer">--:--</div>
+    <div id="next-boss-flavor">The tavern grows uneasy...</div>
+  </div>
+
+  <!-- XP Boost -->
+  <div class="section" id="xp-boost-section">
+    <div class="section-title">✦ Guild XP Surge</div>
+    <div id="xp-boost-active" class="boost-active" style="display:none;">
+      <div class="boost-badge">2×</div>
+      <div class="boost-timer" id="xp-boost-timer">10:00 remaining</div>
+    </div>
+    <div id="xp-boost-inactive" class="boost-inactive">No active surge — buy one with !buy xp-boost</div>
+  </div>
+
+  <!-- Gold Leaderboard -->
+  <div class="section">
+    <div class="section-title">🪙 Gold Leaderboard</div>
+    <div id="leaderboard-list">
+      <div class="leaderboard-empty">Waiting for guild members...</div>
+    </div>
+  </div>
+
+  <!-- Recent Purchases -->
+  <div class="section">
+    <div class="section-title">🛒 Recent Purchases</div>
+    <div id="purchases-list">
+      <div class="purchases-empty">No purchases yet this session.</div>
+    </div>
+  </div>
+
+  <!-- Command Reference -->
+  <div class="section">
+    <div class="section-title">📜 Commands</div>
+    <div class="commands-grid">
+      <div class="cmd-item">!gold <span>check balance</span></div>
+      <div class="cmd-item">!shop <span>browse items</span></div>
+      <div class="cmd-item">!buy &lt;item&gt; <span>purchase</span></div>
+      <div class="cmd-item">!class <span>your loadout</span></div>
+      <div class="cmd-item">!attack <span>fight boss</span></div>
+      <div class="cmd-item">!spell <span>cast magic</span></div>
+      <div class="cmd-item">!smite <span>5g power hit</span></div>
+      <div class="cmd-item">!backstab <span>rogue special</span></div>
+    </div>
+  </div>
+
+  <div class="guild-footer">Rockett DnD Overlay · rockettraccoon12</div>
+
+  <script src="https://extension-files.twitch.tv/helper/v1/twitch-ext.min.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

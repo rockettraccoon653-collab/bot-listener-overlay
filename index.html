@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rockett DnD Overlay</title>
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- Twitch Extension Helper -->
+  <script src="https://extension-files.twitch.tv/helper/v1/twitch-ext.min.js"></script>
+</head>
+<body>
+  <div id="overlay">
+
+    <div id="top-bar" class="panel">
+      <div class="panel-title">Current Quest</div>
+      <div id="quest-text">Survive the stream and grow the guild.</div>
+    </div>
+
+    <div id="questline-panel" class="panel">
+      <div class="panel-title">Guild Questline</div>
+      <div id="quest-active-title">Voices of the Tavern</div>
+      <div id="quest-active-objective">Gather 8 valid chat calls.</div>
+      <div id="quest-progress-row">
+        <div id="quest-progress-text">0 / 8</div>
+        <div id="quest-progress-reward">+16 XP</div>
+      </div>
+      <div id="quest-progress-track">
+        <div id="quest-progress-fill"></div>
+      </div>
+      <div id="quest-upcoming-label">Next Contracts</div>
+      <div id="quest-upcoming-list"></div>
+    </div>
+
+    <div id="left-panel" class="panel">
+      <div class="panel-title">Guild Events</div>
+      <div id="event-log">
+        <div class="event-item">Waiting for travelers...</div>
+      </div>
+    </div>
+
+    <div id="right-panel" class="panel">
+      <div class="panel-title">Guild Rank</div>
+      <div id="level-box">
+        <div id="level-label">Level 1 Rogue</div>
+        <div id="xp-boost-badge" class="hidden">2x XP Boost Active</div>
+        <div id="xp-bar-wrapper">
+          <div id="xp-bar"></div>
+        </div>
+        <div id="xp-text">0 / 100 XP</div>
+      </div>
+    </div>
+
+    <div id="boss-panel" class="panel hidden">
+      <div class="panel-title">Active Boss Fight</div>
+      <div id="boss-visual-row">
+        <div id="boss-avatar" aria-hidden="true">
+          <span id="boss-avatar-glyph">--</span>
+        </div>
+        <div id="boss-lore">No active threat on the board.</div>
+      </div>
+      <div id="boss-name">No boss active</div>
+      <div id="boss-hp-row">
+        <span id="boss-hp-text">0 / 0 HP</span>
+        <span id="boss-threshold-text"></span>
+      </div>
+      <div id="boss-hp-track">
+        <div id="boss-hp-fill"></div>
+      </div>
+      <div id="boss-last-hit">Awaiting challengers...</div>
+      <div id="boss-party-strip"></div>
+      <div id="boss-next-timer">Next boss in --:--</div>
+    </div>
+
+    <div id="shop-toast" class="hidden">
+      <div id="shop-toast-title">Shop Purchase</div>
+      <div id="shop-toast-body">A traveler acquired new gear.</div>
+    </div>
+
+    <div id="center-alert">
+      <div id="alert-box" class="hidden">
+        <div id="alert-title">A New Event Appears</div>
+        <div id="alert-message">A traveler enters the tavern.</div>
+      </div>
+    </div>
+
+    <div id="levelup-scene" class="hidden" aria-hidden="true">
+      <div class="scene-layer levelup-backdrop"></div>
+      <div class="scene-layer levelup-vignette"></div>
+      <div class="scene-layer levelup-aurora"></div>
+
+      <div class="scene-layer levelup-rays" aria-hidden="true">
+        <span class="ray"></span>
+        <span class="ray"></span>
+        <span class="ray"></span>
+        <span class="ray"></span>
+        <span class="ray"></span>
+        <span class="ray"></span>
+        <span class="ray"></span>
+        <span class="ray"></span>
+      </div>
+
+      <div class="scene-layer levelup-shockwave" aria-hidden="true">
+        <span class="shockwave-ring ring-a"></span>
+        <span class="shockwave-ring ring-b"></span>
+      </div>
+
+      <div class="scene-layer levelup-rune-assembly" aria-hidden="true">
+        <div class="rune-circle rune-outer"></div>
+        <div class="rune-circle rune-middle"></div>
+        <div class="rune-circle rune-inner"></div>
+        <div class="rune-sigil sigil-a"></div>
+        <div class="rune-sigil sigil-b"></div>
+      </div>
+
+      <div class="scene-layer levelup-ember-field" aria-hidden="true">
+        <span class="ember"></span><span class="ember"></span><span class="ember"></span><span class="ember"></span>
+        <span class="ember"></span><span class="ember"></span><span class="ember"></span><span class="ember"></span>
+        <span class="ember"></span><span class="ember"></span><span class="ember"></span><span class="ember"></span>
+        <span class="ember"></span><span class="ember"></span><span class="ember"></span><span class="ember"></span>
+      </div>
+
+      <div class="scene-layer levelup-sparks" aria-hidden="true">
+        <span class="spark"></span><span class="spark"></span><span class="spark"></span><span class="spark"></span>
+        <span class="spark"></span><span class="spark"></span><span class="spark"></span><span class="spark"></span>
+      </div>
+
+      <div class="scene-layer levelup-centerpiece">
+        <div class="guild-crest"></div>
+        <svg id="guild-sigil" viewBox="0 0 400 400" aria-hidden="true">
+          <circle class="sigil-orbit orbit-outer" cx="200" cy="200" r="170"></circle>
+          <circle class="sigil-orbit orbit-mid" cx="200" cy="200" r="128"></circle>
+          <path id="sigil-primary" class="sigil-mark"
+            d="M200 60 L260 120 L240 176 L292 200 L240 224 L260 280 L200 340 L140 280 L160 224 L108 200 L160 176 L140 120 Z"></path>
+          <path id="sigil-secondary" class="sigil-mark sigil-rune"
+            d="M200 108 L218 168 L282 170 L230 212 L248 272 L200 236 L152 272 L170 212 L118 170 L182 168 Z"></path>
+        </svg>
+        <div id="levelup-title">LEVEL UP</div>
+        <div id="levelup-subtitle">Guild Rank Increased</div>
+        <div id="levelup-rank-line">Now Level 2 - Footpad</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

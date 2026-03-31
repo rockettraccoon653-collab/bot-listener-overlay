@@ -1,0 +1,1329 @@
+let currentXP = 0;
+let currentLevel = 1;
+let xpToNext = 100;
+
+const DEV_MODE = false;
+const DEV_HOLD_SCENE = false;
+const DEV_EXTRA_VISIBLE_MS = 1800;
+const LEVELUP_DURATION_MS = 5200;
+const ALERT_DURATION_MS = 5200;
+
+const LEVELUP_TITLES = [
+  "LEVEL UP",
+  "NEW RANK EARNED",
+  "GUILD RANK INCREASED",
+  "ROGUE ASCENSION"
+];
+
+const RANK_NAMES = [
+  /* Tier 1 - Street Level (1-10) */
+  "Drifter",             // 1
+  "Cutpurse",            // 2
+  "Footpad",             // 3
+  "Lurker",              // 4
+  "Knife in the Dark",   // 5
+  "Shade Walker",        // 6
+  "Ironcloak",           // 7
+  "Hollow Eye",          // 8
+  "Thornmantle",         // 9
+  "Dusk Runner",         // 10
+  /* Tier 2 - Guild Initiate (11-20) */
+  "Sable Hood",          // 11
+  "Phantom Hand",        // 12
+  "Veil Stalker",        // 13
+  "Crimson Dagger",      // 14
+  "Ashmark",             // 15
+  "Gravewatch",          // 16
+  "Twilight Blade",      // 17
+  "Hexcloaker",          // 18
+  "Wraithkin",           // 19
+  "Shadow Adept",        // 20
+  /* Tier 3 - Nightblade Rank (21-30) */
+  "Bloodmask",           // 21
+  "Ebonmantle",          // 22
+  "Nightblade",          // 23
+  "Silent Consul",       // 24
+  "Bone Shroud",         // 25
+  "Mirrorless",          // 26
+  "Black Lantern",       // 27
+  "Dread Veil",          // 28
+  "Ink Reaper",          // 29
+  "Guild Enforcer",      // 30
+  /* Tier 4 - Shadow Council (31-40) */
+  "Pale Executioner",    // 31
+  "Thornwarden",         // 32
+  "Emberveil",           // 33
+  "Forsaken Blade",      // 34
+  "Hollow Crown",        // 35
+  "Iron Specter",        // 36
+  "Vault Specter",       // 37
+  "Duskbringer",         // 38
+  "Wraith Ascendant",    // 39
+  "Master of Whispers",  // 40
+  /* Tier 5 - Legend (41-50) */
+  "Grave Sentinel",      // 41
+  "Void Mantle",         // 42
+  "Obsidian Marked",     // 43
+  "Eternal Shade",       // 44
+  "Shadow Sovereign",    // 45
+  "Ruinwalker",          // 46
+  "Sable Revenant",      // 47
+  "Umbral Sovereign",    // 48
+  "The Undying",         // 49
+  "The Nameless"         // 50
+];
+
+const xpBar = document.getElementById("xp-bar");
+const xpText = document.getElementById("xp-text");
+const levelLabel = document.getElementById("level-label");
+const xpBoostBadge = document.getElementById("xp-boost-badge");
+const alertBox = document.getElementById("alert-box");
+const alertTitle = document.getElementById("alert-title");
+const alertMessage = document.getElementById("alert-message");
+const eventLog = document.getElementById("event-log");
+const overlay = document.getElementById("overlay");
+const topBar = document.getElementById("top-bar");
+const leftPanel = document.getElementById("left-panel");
+const bossPanel = document.getElementById("boss-panel");
+const bossName = document.getElementById("boss-name");
+const bossHpText = document.getElementById("boss-hp-text");
+const bossHpFill = document.getElementById("boss-hp-fill");
+const bossLastHit = document.getElementById("boss-last-hit");
+const bossNextTimer = document.getElementById("boss-next-timer");
+const bossThresholdText = document.getElementById("boss-threshold-text");
+const bossAvatar = document.getElementById("boss-avatar");
+const bossAvatarGlyph = document.getElementById("boss-avatar-glyph");
+const bossLore = document.getElementById("boss-lore");
+const bossPartyStrip = document.getElementById("boss-party-strip");
+const shopToast = document.getElementById("shop-toast");
+const shopToastTitle = document.getElementById("shop-toast-title");
+const shopToastBody = document.getElementById("shop-toast-body");
+
+const questlinePanel = document.getElementById("questline-panel");
+const questActiveTitle = document.getElementById("quest-active-title");
+const questActiveObjective = document.getElementById("quest-active-objective");
+const questProgressText = document.getElementById("quest-progress-text");
+const questProgressReward = document.getElementById("quest-progress-reward");
+const questProgressFill = document.getElementById("quest-progress-fill");
+const questUpcomingList = document.getElementById("quest-upcoming-list");
+
+const levelupScene = document.getElementById("levelup-scene");
+const levelupTitle = document.getElementById("levelup-title");
+const levelupSubtitle = document.getElementById("levelup-subtitle");
+const levelupRankLine = document.getElementById("levelup-rank-line");
+const sigilPrimary = document.getElementById("sigil-primary");
+const sigilSecondary = document.getElementById("sigil-secondary");
+const embers = Array.from(document.querySelectorAll(".ember"));
+const sparks = Array.from(document.querySelectorAll(".spark"));
+const SCENE_AUDIO_EVENT = "overlay:levelup-audio";
+
+const SIGIL_FORMS = [
+  {
+    primary: "M200 62 L260 120 L242 176 L292 200 L242 224 L260 280 L200 338 L140 280 L158 224 L108 200 L158 176 L140 120 Z",
+    secondary: "M200 108 L218 168 L282 170 L230 212 L248 272 L200 236 L152 272 L170 212 L118 170 L182 168 Z"
+  },
+  {
+    primary: "M200 58 L242 108 L300 128 L272 188 L312 240 L250 248 L200 328 L150 248 L88 240 L128 188 L100 128 L158 108 Z",
+    secondary: "M200 112 L232 150 L280 162 L254 202 L270 252 L224 236 L200 282 L176 236 L130 252 L146 202 L120 162 L168 150 Z"
+  },
+  {
+    primary: "M200 70 L268 112 L290 184 L334 200 L290 216 L268 288 L200 330 L132 288 L110 216 L66 200 L110 184 L132 112 Z",
+    secondary: "M200 110 L220 160 L278 180 L230 200 L246 258 L200 224 L154 258 L170 200 L122 180 L180 160 Z"
+  },
+  {
+    primary: "M200 56 L252 96 L324 108 L288 176 L332 236 L264 248 L232 320 L168 320 L136 248 L68 236 L112 176 L76 108 L148 96 Z",
+    secondary: "M200 116 L246 152 L282 198 L232 204 L216 264 L184 264 L168 204 L118 198 L154 152 Z"
+  }
+];
+
+const CHAT_EVENT_NAME = "overlay:chat-message";
+
+// Chat progression config with fallbacks if config.js omits fields.
+const chatConfig = {
+  enabled: overlayConfig.chatParticipation?.enabled ?? false,
+  localWsEnabled: overlayConfig.chatParticipation?.localWsEnabled ?? true,
+  localWsUrl: overlayConfig.chatParticipation?.localWsUrl ?? "ws://127.0.0.1:8787",
+  messageCooldownMs: overlayConfig.chatParticipation?.messageCooldownMs ?? 10000,
+  messagesPerReward: overlayConfig.chatParticipation?.messagesPerReward ?? 5,
+  xpPerReward: overlayConfig.chatParticipation?.xpPerReward ?? 6,
+  minMessageLength: overlayConfig.chatParticipation?.minMessageLength ?? 6,
+  minWordCount: overlayConfig.chatParticipation?.minWordCount ?? 2,
+  minUniqueChars: overlayConfig.chatParticipation?.minUniqueChars ?? 4,
+  maxRepeatedCharRatio: overlayConfig.chatParticipation?.maxRepeatedCharRatio ?? 0.55,
+  milestoneBonuses: overlayConfig.chatParticipation?.milestoneBonuses ?? { 25: 18, 50: 38, 100: 85 },
+  milestoneNotifications: overlayConfig.chatParticipation?.milestoneNotifications ?? [
+    "A Familiar Voice Rises in the Tavern",
+    "Guild Presence Strengthens",
+    "The Hall Grows Louder"
+  ]
+};
+
+const chatUserState = new Map();
+const sortedMilestones = Object.keys(chatConfig.milestoneBonuses)
+  .map((value) => Number(value))
+  .filter((value) => Number.isFinite(value) && value > 0)
+  .sort((a, b) => a - b);
+
+const questlineConfig = {
+  enabled: overlayConfig.questline?.enabled ?? true,
+  loopQuests: overlayConfig.questline?.loopQuests ?? true,
+  quests: (overlayConfig.questline?.quests || []).map((quest, index) => ({
+    id: quest.id || `quest-${index + 1}`,
+    title: quest.title || `Guild Contract ${index + 1}`,
+    objective: quest.objective || "Complete the guild contract.",
+    target: Math.max(1, Number(quest.target) || 1),
+    rewardXP: Math.max(1, Number(quest.rewardXP) || 10),
+    track: quest.track || { "event.any": 1 }
+  }))
+};
+
+const sceneControlConfig = {
+  enabled: overlayConfig.sceneControl?.enabled ?? true,
+  justChattingSceneName: String(overlayConfig.sceneControl?.justChattingSceneName || "Just Chatting"),
+  gameSceneName: String(overlayConfig.sceneControl?.gameSceneName || "Game Screen"),
+  questlineRevealCommand: String(overlayConfig.sceneControl?.questlineRevealCommand || "!quest"),
+  questlineRevealDurationMs: Math.max(5000, Number(overlayConfig.sceneControl?.questlineRevealDurationMs) || 30000),
+  minRevealDurationMs: Math.max(5000, Number(overlayConfig.sceneControl?.minRevealDurationMs) || 10000),
+  maxRevealDurationMs: Math.max(10000, Number(overlayConfig.sceneControl?.maxRevealDurationMs) || 180000),
+  gameEventsPanelOpacity: Math.max(0.1, Math.min(1, Number(overlayConfig.sceneControl?.gameEventsPanelOpacity) || 0.38)),
+  gameEventsRevealDurationMs: Math.max(2000, Number(overlayConfig.sceneControl?.gameEventsRevealDurationMs) || 8000)
+};
+
+const questlineState = {
+  activeQuestIndex: 0,
+  progressByQuestId: new Map()
+};
+
+const sceneState = {
+  currentName: "",
+  questlineVisibleUntil: 0,
+  questlineTimer: null,
+  eventsTimer: null
+};
+
+const bossState = {
+  active: false,
+  key: "",
+  name: "",
+  tier: 1,
+  visual: null,
+  hp: 0,
+  maxHp: 0,
+  nextSpawnAt: 0,
+  recentFighters: []
+};
+
+const xpBoostState = {
+  multiplier: 1,
+  expiresAt: 0
+};
+
+let chatLocalSocket = null;
+let chatSocketRetryTimer = null;
+let bossCountdownTicker = null;
+const seenRelayEvents = new Map();
+
+let alertTimer = null;
+let levelupTimer = null;
+let glowTimer = null;
+let shudderTimer = null;
+let pulseTimers = [];
+let toastTimer = null;
+
+function getXpMultiplier() {
+  if (Date.now() <= xpBoostState.expiresAt) {
+    return xpBoostState.multiplier;
+  }
+
+  xpBoostState.multiplier = 1;
+  xpBoostState.expiresAt = 0;
+  return 1;
+}
+
+function renderXpBoostBadge() {
+  if (!xpBoostBadge) return;
+
+  const multiplier = getXpMultiplier();
+  if (multiplier <= 1) {
+    xpBoostBadge.classList.add("hidden");
+    return;
+  }
+
+  const remainingMs = Math.max(0, xpBoostState.expiresAt - Date.now());
+  const sec = Math.ceil(remainingMs / 1000);
+  const mm = String(Math.floor(sec / 60)).padStart(2, "0");
+  const ss = String(sec % 60).padStart(2, "0");
+  xpBoostBadge.classList.remove("hidden");
+  xpBoostBadge.textContent = `${multiplier}x XP Boost ${mm}:${ss}`;
+}
+
+function showShopToastMessage(title, body) {
+  if (!shopToast || !shopToastTitle || !shopToastBody) return;
+
+  if (toastTimer) {
+    clearTimeout(toastTimer);
+  }
+
+  shopToastTitle.textContent = title;
+  shopToastBody.textContent = body;
+  shopToast.classList.remove("hidden");
+
+  toastTimer = setTimeout(() => {
+    shopToast.classList.add("hidden");
+  }, 4200);
+}
+
+function renderBossPanel() {
+  if (!bossPanel) return;
+
+  if (!bossState.active) {
+    bossPanel.classList.remove("hidden");
+    bossName.textContent = "No boss active";
+    bossAvatarGlyph.textContent = "--";
+    if (bossAvatar) {
+      bossAvatar.style.borderColor = "rgba(236, 164, 98, 0.86)";
+    }
+    if (bossLore) {
+      bossLore.textContent = "No active threat on the board.";
+    }
+    bossHpText.textContent = "0 / 0 HP";
+    bossHpFill.style.width = "0%";
+    bossLastHit.textContent = "The guild gathers strength for the next battle.";
+    renderBossPartyStrip();
+    return;
+  }
+
+  const visual = resolveBossVisual();
+  bossPanel.classList.remove("hidden");
+  bossName.textContent = bossState.name || "Unknown Boss";
+  bossAvatarGlyph.textContent = visual.glyph;
+  if (bossAvatar) {
+    bossAvatar.style.borderColor = `${visual.accent}aa`;
+  }
+  if (bossLore) {
+    bossLore.textContent = visual.lore;
+  }
+  bossHpText.textContent = `${Math.max(0, Math.round(bossState.hp))} / ${Math.max(0, Math.round(bossState.maxHp))} HP`;
+  const percent = bossState.maxHp > 0 ? Math.max(0, Math.min(100, (bossState.hp / bossState.maxHp) * 100)) : 0;
+  bossHpFill.style.width = `${percent}%`;
+  renderBossPartyStrip();
+}
+
+function resolveBossVisual() {
+  const fallback = getBossFallbackVisual(bossState.key, bossState.name, bossState.tier);
+  const visual = bossState.visual || {};
+  return {
+    glyph: String(visual.glyph || fallback.glyph || "??").slice(0, 2).toUpperCase(),
+    accent: String(visual.accent || fallback.accent || "#d98b5a"),
+    lore: String(visual.lore || fallback.lore || "The guild braces for impact.")
+  };
+}
+
+function getBossFallbackVisual(bossKey, bossNameValue, tier) {
+  const key = String(bossKey || "").toLowerCase();
+  if (key === "goblin") {
+    return { glyph: "GK", accent: "#8bcf62", lore: "A reckless tyrant testing the guild's first steel." };
+  }
+
+  if (key === "troll") {
+    return { glyph: "ST", accent: "#9cbca9", lore: "A bruiser from the old caves that punishes weak formation." };
+  }
+
+  if (key === "dragon") {
+    return { glyph: "ED", accent: "#f2906f", lore: "An apex nightmare meant for a battle-ready party." };
+  }
+
+  const initials = String(bossNameValue || "Boss")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase();
+
+  return {
+    glyph: initials || "BO",
+    accent: tier >= 3 ? "#f2906f" : tier >= 2 ? "#9cbca9" : "#8bcf62",
+    lore: "The guild studies its next opponent."
+  };
+}
+
+function renderBossPartyStrip() {
+  if (!bossPartyStrip) return;
+
+  bossPartyStrip.innerHTML = "";
+  const fighters = Array.isArray(bossState.recentFighters) ? bossState.recentFighters.slice(0, 6) : [];
+
+  if (!fighters.length) {
+    const empty = document.createElement("div");
+    empty.className = "fighter-chip";
+    const name = document.createElement("div");
+    name.className = "fighter-chip-name";
+    name.textContent = "No strikes yet";
+    const meta = document.createElement("div");
+    meta.className = "fighter-chip-meta";
+    meta.textContent = "Awaiting first attack";
+    empty.appendChild(name);
+    empty.appendChild(meta);
+    bossPartyStrip.appendChild(empty);
+    return;
+  }
+
+  fighters.forEach((fighter) => {
+    const chip = document.createElement("div");
+    chip.className = "fighter-chip";
+
+    const name = document.createElement("div");
+    name.className = "fighter-chip-name";
+    name.textContent = String(fighter.username || "Traveler");
+
+    const meta = document.createElement("div");
+    meta.className = "fighter-chip-meta";
+    const className = String(fighter.className || "peasant").replace(/-/g, " ");
+    const weaponName = String(fighter.weapon || "fists").replace(/-/g, " ");
+    meta.textContent = `${className} | ${weaponName}`;
+
+    chip.appendChild(name);
+    chip.appendChild(meta);
+    bossPartyStrip.appendChild(chip);
+  });
+}
+
+function shouldProcessRelayPayload(payload) {
+  const relayId = payload?.relayMeta?.id;
+  if (!relayId) {
+    return true;
+  }
+
+  const now = Date.now();
+  const existing = seenRelayEvents.get(relayId);
+  if (existing && now - existing < 30000) {
+    return false;
+  }
+
+  seenRelayEvents.set(relayId, now);
+  if (seenRelayEvents.size > 800) {
+    for (const [id, timestamp] of seenRelayEvents.entries()) {
+      if (now - timestamp > 30000) {
+        seenRelayEvents.delete(id);
+      }
+    }
+  }
+
+  return true;
+}
+
+function renderBossCountdown() {
+  if (!bossNextTimer) return;
+
+  if (bossState.active) {
+    bossNextTimer.textContent = "Boss active now";
+    return;
+  }
+
+  if (!bossState.nextSpawnAt) {
+    bossNextTimer.textContent = "Next boss in --:--";
+    return;
+  }
+
+  const remainingMs = Math.max(0, bossState.nextSpawnAt - Date.now());
+  const sec = Math.ceil(remainingMs / 1000);
+  const mm = String(Math.floor(sec / 60)).padStart(2, "0");
+  const ss = String(sec % 60).padStart(2, "0");
+  bossNextTimer.textContent = `Next boss in ${mm}:${ss}`;
+}
+
+function handleOverlayPayload(payload) {
+  if (!payload || typeof payload !== "object") return;
+  if (!shouldProcessRelayPayload(payload)) return;
+
+  if (payload.type === "chat" && payload.username && payload.message) {
+    handleIncomingChat(payload.username, payload.message);
+    return;
+  }
+
+  if (payload.type === "scene_change") {
+    const sceneName = String(payload.sceneName || "").trim();
+    if (!sceneName) return;
+    setActiveScene(sceneName);
+    addEventLog(`Scene switched: ${sceneName}.`);
+    return;
+  }
+
+  if (payload.type === "shop_purchase") {
+    showShopToastMessage("Shop Purchase", `${payload.by || "A traveler"} bought ${payload.itemName || "an item"}.`);
+    addEventLog(`Shop: ${payload.by || "Traveler"} purchased ${payload.itemName || "item"}.`);
+    return;
+  }
+
+  if (payload.type === "shop_effect") {
+    showShopToastMessage("Arcane Effect", `${payload.by || "A traveler"} invoked ${payload.itemName || payload.effectKey}.`);
+    triggerScreenShudder(0.75);
+    return;
+  }
+
+  if (payload.type === "shop_sound") {
+    showShopToastMessage("Guild Sound", `${payload.by || "A traveler"} played ${payload.itemName || payload.soundKey}.`);
+    return;
+  }
+
+  if (payload.type === "shop_xpboost") {
+    xpBoostState.multiplier = Math.max(1, Number(payload.multiplier || 1));
+    xpBoostState.expiresAt = Number(payload.endsAt || payload.expiresAt || 0);
+    renderXpBoostBadge();
+    showShopToastMessage("XP Boost Active", `${payload.by || "A traveler"} activated ${xpBoostState.multiplier}x XP.`);
+    return;
+  }
+
+  if (payload.type === "boss_timer") {
+    bossState.nextSpawnAt = Number(payload.nextSpawnAt || 0);
+    renderBossCountdown();
+    return;
+  }
+
+  if (payload.type === "boss_spawn") {
+    bossState.active = true;
+    bossState.key = payload.boss?.key || "";
+    bossState.name = payload.boss?.name || "Unknown Boss";
+    bossState.tier = Number(payload.boss?.tier || 1);
+    bossState.visual = payload.boss?.visual || null;
+    bossState.hp = Number(payload.boss?.hp || 0);
+    bossState.maxHp = Number(payload.boss?.maxHp || 0);
+    bossState.nextSpawnAt = 0;
+    bossState.recentFighters = [];
+    bossThresholdText.textContent = "";
+    bossLastHit.textContent = `Summoned by ${payload.boss?.summonedBy || "the guild"}.`;
+    renderBossPanel();
+    renderBossCountdown();
+    showShopToastMessage("Boss Spawned", `${bossState.name} entered the battlefield.`);
+    return;
+  }
+
+  if (payload.type === "boss_damage") {
+    bossState.active = true;
+    bossState.key = payload.bossKey || bossState.key;
+    bossState.name = payload.bossName || bossState.name;
+    bossState.hp = Number(payload.hp || bossState.hp);
+    bossState.maxHp = Number(payload.maxHp || bossState.maxHp);
+    if (Array.isArray(payload.recentFighters)) {
+      bossState.recentFighters = payload.recentFighters;
+    }
+    bossLastHit.textContent = `${payload.by || "Traveler"} used ${payload.command || "!attack"} for ${payload.damage || 0} damage.`;
+    renderBossPanel();
+    return;
+  }
+
+  if (payload.type === "boss_threshold") {
+    const thresholdPercent = Math.round(Number(payload.threshold || 0) * 100);
+    bossThresholdText.textContent = `${thresholdPercent}% Rage`;
+    triggerScreenShudder(1.1);
+    return;
+  }
+
+  if (payload.type === "boss_defeat") {
+    showShopToastMessage("Boss Defeated", `${payload.bossName || "Boss"} was slain by the guild.`);
+    bossState.active = false;
+    bossState.key = "";
+    bossState.name = "";
+    bossState.hp = 0;
+    bossState.maxHp = 0;
+    bossState.recentFighters = [];
+    bossThresholdText.textContent = "";
+    renderBossPanel();
+    return;
+  }
+
+  if (payload.type === "boss_retreat") {
+    showShopToastMessage("Boss Retreated", `${payload.bossName || "Boss"} escaped into the dark.`);
+    bossState.active = false;
+    bossState.key = "";
+    bossState.name = "";
+    bossState.hp = 0;
+    bossState.maxHp = 0;
+    bossState.recentFighters = [];
+    bossThresholdText.textContent = "";
+    renderBossPanel();
+    return;
+  }
+
+  if (payload.type === "boss_rewards") {
+    awardXP(Number(payload.guildXp || 0));
+    addEventLog(`Guild reward: +${payload.guildXp || 0} XP for boss victory.`);
+  }
+}
+
+function updateOverlayScale() {
+  const baseWidth = 1920;
+  const baseHeight = 1080;
+  const scale = Math.min(window.innerWidth / baseWidth, window.innerHeight / baseHeight);
+  const safeScale = Math.max(0.1, scale);
+  overlay.style.setProperty("--overlay-scale", safeScale.toFixed(4));
+}
+
+function normalizeSceneName(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isGameScene(sceneName) {
+  return normalizeSceneName(sceneName) === normalizeSceneName(sceneControlConfig.gameSceneName);
+}
+
+function isJustChattingScene(sceneName) {
+  return normalizeSceneName(sceneName) === normalizeSceneName(sceneControlConfig.justChattingSceneName);
+}
+
+function clearQuestlineRevealTimer() {
+  if (!sceneState.questlineTimer) return;
+  clearTimeout(sceneState.questlineTimer);
+  sceneState.questlineTimer = null;
+}
+
+function clearEventsRevealTimer() {
+  if (!sceneState.eventsTimer) return;
+  clearTimeout(sceneState.eventsTimer);
+  sceneState.eventsTimer = null;
+}
+
+function tempShowEventsPanel() {
+  if (!overlay || !isGameScene(sceneState.currentName)) return;
+  clearEventsRevealTimer();
+  overlay.classList.add("events-temp-visible");
+  sceneState.eventsTimer = setTimeout(() => {
+    overlay.classList.remove("events-temp-visible");
+    sceneState.eventsTimer = null;
+  }, sceneControlConfig.gameEventsRevealDurationMs);
+}
+
+function applySceneLayoutState() {
+  if (!overlay || !sceneControlConfig.enabled) return;
+
+  const gameScene = isGameScene(sceneState.currentName);
+  const justChattingScene = isJustChattingScene(sceneState.currentName);
+  const questlineTempVisible = gameScene && Date.now() < sceneState.questlineVisibleUntil;
+
+  overlay.classList.toggle("scene-game", gameScene);
+  overlay.classList.toggle("scene-just-chatting", justChattingScene);
+  overlay.classList.toggle("scene-default", !gameScene && !justChattingScene);
+  overlay.classList.toggle("questline-temp-visible", questlineTempVisible);
+
+  if (!gameScene) {
+    sceneState.questlineVisibleUntil = 0;
+    clearQuestlineRevealTimer();
+    clearEventsRevealTimer();
+    overlay.classList.remove("events-temp-visible");
+  }
+}
+
+function setActiveScene(sceneName) {
+  if (!sceneControlConfig.enabled) return;
+
+  const normalizedIncoming = normalizeSceneName(sceneName);
+  if (!normalizedIncoming) return;
+
+  if (normalizedIncoming === normalizeSceneName(sceneState.currentName)) {
+    return;
+  }
+
+  sceneState.currentName = String(sceneName).trim();
+  applySceneLayoutState();
+}
+
+function parseRevealDurationMs(messageText) {
+  const parts = String(messageText || "").trim().split(/\s+/);
+  const seconds = Number(parts[1]);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return sceneControlConfig.questlineRevealDurationMs;
+  }
+
+  const ms = Math.round(seconds * 1000);
+  return Math.max(sceneControlConfig.minRevealDurationMs, Math.min(sceneControlConfig.maxRevealDurationMs, ms));
+}
+
+function handleSceneCommand(username, messageText) {
+  if (!sceneControlConfig.enabled || !sceneControlConfig.questlineRevealCommand) {
+    return false;
+  }
+
+  const text = String(messageText || "").trim();
+  if (!text) return false;
+
+  const parts = text.split(/\s+/);
+  const command = parts[0].toLowerCase();
+  if (command !== sceneControlConfig.questlineRevealCommand.toLowerCase()) {
+    return false;
+  }
+
+  if (!isGameScene(sceneState.currentName)) {
+    return true;
+  }
+
+  const durationMs = parseRevealDurationMs(text);
+  sceneState.questlineVisibleUntil = Date.now() + durationMs;
+  applySceneLayoutState();
+
+  clearQuestlineRevealTimer();
+  sceneState.questlineTimer = setTimeout(() => {
+    sceneState.questlineVisibleUntil = 0;
+    sceneState.questlineTimer = null;
+    applySceneLayoutState();
+  }, durationMs);
+
+  const safeUser = String(username || "Traveler").trim() || "Traveler";
+  const seconds = Math.round(durationMs / 1000);
+  addEventLog(`${safeUser} revealed guild questline for ${seconds}s.`);
+  return true;
+}
+
+function handleIncomingChat(username, messageText) {
+  const handledCommand = handleSceneCommand(username, messageText);
+  if (handledCommand) {
+    return;
+  }
+
+  processChatParticipation(username, messageText);
+}
+
+function getCurrentQuest() {
+  if (!questlineConfig.quests.length) return null;
+  return questlineConfig.quests[questlineState.activeQuestIndex] || null;
+}
+
+function getQuestProgress(questId) {
+  return questlineState.progressByQuestId.get(questId) || 0;
+}
+
+function setQuestProgress(questId, value) {
+  questlineState.progressByQuestId.set(questId, Math.max(0, value));
+}
+
+function renderQuestlinePanel() {
+  if (!questlinePanel) return;
+
+  if (!questlineConfig.enabled || !questlineConfig.quests.length) {
+    questlinePanel.classList.add("hidden");
+    return;
+  }
+
+  questlinePanel.classList.remove("hidden");
+
+  const quest = getCurrentQuest();
+  if (!quest) {
+    questActiveTitle.textContent = "All Contracts Completed";
+    questActiveObjective.textContent = "The guild awaits new trials.";
+    questProgressText.textContent = "Complete";
+    questProgressReward.textContent = "+0 XP";
+    questProgressFill.style.width = "100%";
+    questUpcomingList.textContent = "No active contracts.";
+    return;
+  }
+
+  const progress = Math.min(getQuestProgress(quest.id), quest.target);
+  const percent = Math.min(100, (progress / quest.target) * 100);
+
+  questActiveTitle.textContent = quest.title;
+  questActiveObjective.textContent = quest.objective;
+  questProgressText.textContent = `${progress} / ${quest.target}`;
+  questProgressReward.textContent = `+${quest.rewardXP} XP`;
+  questProgressFill.style.width = `${percent}%`;
+
+  questUpcomingList.innerHTML = "";
+  const item = document.createElement("div");
+  item.className = "quest-upcoming-item";
+  item.textContent = "Next contract chosen at random.";
+  questUpcomingList.appendChild(item);
+}
+
+function advanceQuestline() {
+  const quests = questlineConfig.quests;
+  if (!quests.length) return;
+
+  let nextIndex = questlineState.activeQuestIndex;
+  if (quests.length > 1) {
+    do {
+      nextIndex = Math.floor(Math.random() * quests.length);
+    } while (nextIndex === questlineState.activeQuestIndex);
+  }
+
+  questlineState.activeQuestIndex = nextIndex;
+  questlineState.progressByQuestId.delete(quests[nextIndex].id);
+}
+
+function applyQuestProgress(activityKey, sourceUser = "Traveler") {
+  if (!questlineConfig.enabled) return;
+
+  const quest = getCurrentQuest();
+  if (!quest) return;
+
+  const directGain = Number(quest.track[activityKey] || 0);
+  const fallbackGain = activityKey.startsWith("event.") ? Number(quest.track["event.any"] || 0) : 0;
+  const gain = directGain || fallbackGain;
+
+  if (gain <= 0) return;
+
+  const currentProgress = getQuestProgress(quest.id);
+  const nextProgress = Math.min(quest.target, currentProgress + gain);
+  setQuestProgress(quest.id, nextProgress);
+  renderQuestlinePanel();
+
+  if (nextProgress >= quest.target) {
+    awardXP(quest.rewardXP);
+    showAlert("Contract Fulfilled", `${quest.title} completed by the guild (+${quest.rewardXP} XP).`);
+    addEventLog(`Quest Complete - ${quest.title} (${sourceUser})`);
+    advanceQuestline();
+    renderQuestlinePanel();
+  }
+}
+
+function normalizeChatMessage(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s']/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getLongestRunRatio(text) {
+  if (!text.length) return 1;
+
+  let longestRun = 1;
+  let currentRun = 1;
+
+  for (let i = 1; i < text.length; i++) {
+    if (text[i] === text[i - 1]) {
+      currentRun++;
+      longestRun = Math.max(longestRun, currentRun);
+    } else {
+      currentRun = 1;
+    }
+  }
+
+  return longestRun / text.length;
+}
+
+function getChatUserState(username) {
+  if (!chatUserState.has(username)) {
+    chatUserState.set(username, {
+      validMessages: 0,
+      lastCountedAt: 0,
+      lastNormalized: "",
+      milestonesAwarded: new Set()
+    });
+  }
+
+  return chatUserState.get(username);
+}
+
+function validateChatMessage(messageText, state, now) {
+  const normalized = normalizeChatMessage(messageText);
+  const compact = normalized.replace(/\s/g, "");
+  const words = normalized.length ? normalized.split(" ").filter(Boolean) : [];
+
+  if (!normalized) {
+    return { valid: false, normalized, reason: "empty" };
+  }
+
+  if (now - state.lastCountedAt < chatConfig.messageCooldownMs) {
+    return { valid: false, normalized, reason: "cooldown" };
+  }
+
+  if (normalized.length < chatConfig.minMessageLength) {
+    return { valid: false, normalized, reason: "too-short" };
+  }
+
+  if (words.length < chatConfig.minWordCount) {
+    return { valid: false, normalized, reason: "too-few-words" };
+  }
+
+  if (new Set(compact).size < chatConfig.minUniqueChars) {
+    return { valid: false, normalized, reason: "low-unique-chars" };
+  }
+
+  if (getLongestRunRatio(compact) > chatConfig.maxRepeatedCharRatio) {
+    return { valid: false, normalized, reason: "repeated-chars" };
+  }
+
+  if (normalized === state.lastNormalized) {
+    return { valid: false, normalized, reason: "duplicate" };
+  }
+
+  return { valid: true, normalized, reason: "ok" };
+}
+
+function awardXP(xpGain) {
+  const multiplier = getXpMultiplier();
+  const adjusted = Math.max(0, Math.round(Number(xpGain || 0) * multiplier));
+  currentXP += adjusted;
+  levelUpCheck();
+  updateXPBar();
+}
+
+function getMilestoneNotification(milestone) {
+  const pool = chatConfig.milestoneNotifications;
+  if (!pool.length) {
+    return "Guild Presence Strengthens";
+  }
+
+  return pool[milestone % pool.length];
+}
+
+function processChatParticipation(username, messageText) {
+  if (!chatConfig.enabled) return;
+
+  const safeUser = String(username || "Traveler").trim() || "Traveler";
+  const state = getChatUserState(safeUser.toLowerCase());
+  const now = Date.now();
+  const validation = validateChatMessage(messageText, state, now);
+
+  if (!validation.valid) {
+    return;
+  }
+
+  state.lastCountedAt = now;
+  state.lastNormalized = validation.normalized;
+  state.validMessages++;
+
+  applyQuestProgress("chat.valid", safeUser);
+
+  // Award base participation XP every N valid messages.
+  if (state.validMessages % chatConfig.messagesPerReward === 0) {
+    const previousLevel = currentLevel;
+    awardXP(chatConfig.xpPerReward);
+
+    if (currentLevel === previousLevel) {
+      addEventLog(`Tavern chatter: ${safeUser} sustained presence (+${chatConfig.xpPerReward} XP).`);
+    }
+  }
+
+  // One-time milestone rewards and themed announcements.
+  for (const milestone of sortedMilestones) {
+    if (state.validMessages >= milestone && !state.milestonesAwarded.has(milestone)) {
+      const bonusXP = chatConfig.milestoneBonuses[milestone] || 0;
+      state.milestonesAwarded.add(milestone);
+
+      const previousLevel = currentLevel;
+      if (bonusXP > 0) {
+        awardXP(bonusXP);
+      }
+
+      const milestoneTitle = getMilestoneNotification(milestone);
+      const milestoneMessage = `${safeUser} reached ${milestone} valid tavern calls (+${bonusXP} XP).`;
+
+      if (currentLevel === previousLevel) {
+        showAlert(milestoneTitle, milestoneMessage);
+      }
+
+      addEventLog(`${milestoneTitle} - ${safeUser} (${milestone} messages)`);
+    }
+  }
+}
+
+function connectLocalChatSocket() {
+  if (!chatConfig.enabled || !chatConfig.localWsEnabled) return;
+
+  if (chatLocalSocket && (chatLocalSocket.readyState === WebSocket.OPEN || chatLocalSocket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  try {
+    chatLocalSocket = new WebSocket(chatConfig.localWsUrl);
+  } catch (error) {
+    scheduleLocalSocketReconnect();
+    return;
+  }
+
+  chatLocalSocket.addEventListener("open", () => {
+    addEventLog("Local chat relay linked.");
+  });
+
+  chatLocalSocket.addEventListener("message", (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      handleOverlayPayload(payload);
+    } catch (error) {
+      // Ignore malformed socket payloads.
+    }
+  });
+
+  chatLocalSocket.addEventListener("close", () => {
+    scheduleLocalSocketReconnect();
+  });
+
+  chatLocalSocket.addEventListener("error", () => {
+    scheduleLocalSocketReconnect();
+  });
+}
+
+function scheduleLocalSocketReconnect() {
+  if (chatSocketRetryTimer) {
+    return;
+  }
+
+  chatSocketRetryTimer = setTimeout(() => {
+    chatSocketRetryTimer = null;
+    connectLocalChatSocket();
+  }, 2500);
+}
+
+function getRankName(level) {
+  return RANK_NAMES[(level - 1) % RANK_NAMES.length];
+}
+
+function randomRange(min, max) {
+  return Math.random() * (max - min) + min;
+}
+
+function setSceneGlowIntensity(intensity, durationMs = 260) {
+  const clamped = Math.max(0, Math.min(1.35, intensity));
+  levelupScene.style.setProperty("--audio-glow", clamped.toFixed(2));
+
+  if (glowTimer) {
+    clearTimeout(glowTimer);
+  }
+
+  glowTimer = setTimeout(() => {
+    levelupScene.style.setProperty("--audio-glow", "0");
+  }, durationMs);
+}
+
+function clearPulseSequence() {
+  pulseTimers.forEach((timerId) => {
+    clearTimeout(timerId);
+  });
+  pulseTimers = [];
+}
+
+function playPulseSequence(baseIntensity, isMilestone) {
+  clearPulseSequence();
+
+  const beats = isMilestone
+    ? [
+        { t: 0, glow: 0.85, shake: 0.9, hold: 180 },
+        { t: 220, glow: 1.05, shake: 1.05, hold: 180 },
+        { t: 450, glow: 1.2, shake: 1.28, hold: 240 },
+        { t: 760, glow: 0.78, shake: 0.7, hold: 220 }
+      ]
+    : [
+        { t: 0, glow: 0.68, shake: 0.72, hold: 150 },
+        { t: 250, glow: 0.88, shake: 0.98, hold: 200 },
+        { t: 560, glow: 0.58, shake: 0.56, hold: 180 }
+      ];
+
+  beats.forEach((beat) => {
+    const timerId = setTimeout(() => {
+      const glow = Math.min(1.35, beat.glow * baseIntensity);
+      const shake = Math.min(1.5, beat.shake * baseIntensity);
+      setSceneGlowIntensity(glow, beat.hold);
+      triggerScreenShudder(shake);
+    }, beat.t);
+
+    pulseTimers.push(timerId);
+  });
+}
+
+function triggerScreenShudder(intensity = 0.8) {
+  const clamped = Math.max(0.2, Math.min(1.5, intensity));
+  overlay.style.setProperty("--shake-amp", `${(2 + clamped * 5).toFixed(2)}px`);
+
+  overlay.classList.remove("shudder");
+  void overlay.offsetWidth;
+  overlay.classList.add("shudder");
+
+  if (shudderTimer) {
+    clearTimeout(shudderTimer);
+  }
+
+  shudderTimer = setTimeout(() => {
+    overlay.classList.remove("shudder");
+  }, 430);
+}
+
+function applyRankSigil(level, isMilestone) {
+  if (!sigilPrimary || !sigilSecondary) return;
+
+  const index = (level - 1) % SIGIL_FORMS.length;
+  const form = SIGIL_FORMS[index];
+  sigilPrimary.setAttribute("d", form.primary);
+  sigilSecondary.setAttribute("d", form.secondary);
+
+  // Milestones get denser ritual linework.
+  sigilPrimary.style.strokeWidth = isMilestone ? "3.2" : "2.6";
+  sigilSecondary.style.strokeWidth = isMilestone ? "2.8" : "2.2";
+}
+
+function seedProceduralParticles(isMilestone) {
+  embers.forEach((ember, index) => {
+    const direction = index % 2 === 0 ? -1 : 1;
+    const spread = randomRange(70, 360) * direction;
+    const arcDrift = randomRange(-130, 130);
+
+    ember.style.setProperty("--sx", `${Math.round(spread)}px`);
+    ember.style.setProperty("--sy", `${Math.round(randomRange(10, 84))}px`);
+    ember.style.setProperty("--dx", `${Math.round(arcDrift)}px`);
+    ember.style.setProperty("--dy", `${Math.round(randomRange(210, isMilestone ? 420 : 340))}px`);
+    ember.style.setProperty("--scale", randomRange(0.55, 1.2).toFixed(2));
+    ember.style.setProperty("--delay", `${randomRange(0.02, 0.95).toFixed(2)}s`);
+    ember.style.setProperty("--dur", `${randomRange(1.7, isMilestone ? 3.1 : 2.6).toFixed(2)}s`);
+  });
+
+  sparks.forEach((spark, index) => {
+    const rotation = Math.round(randomRange(-32, 212));
+    const offset = Math.round(randomRange(-130, 120));
+    spark.style.transform = `translate(-50%, ${offset}px) rotate(${rotation}deg)`;
+    spark.style.animationDelay = `${randomRange(0, 0.35).toFixed(2)}s`;
+  });
+}
+
+function getLevelupTitle(levelsGained, isMilestone) {
+  if (levelsGained >= 2) {
+    return "ASCENSION x" + levelsGained;
+  }
+
+  if (isMilestone) {
+    return "ROGUE ASCENSION";
+  }
+
+  const index = Math.floor(Math.random() * LEVELUP_TITLES.length);
+  return LEVELUP_TITLES[index];
+}
+
+function updateXPBar() {
+  const percent = (currentXP / xpToNext) * 100;
+  xpBar.style.width = `${Math.min(percent, 100)}%`;
+  xpText.textContent = `${currentXP} / ${xpToNext} XP`;
+  levelLabel.textContent = `Level ${currentLevel} ${getRankName(currentLevel)}`;
+}
+
+function addEventLog(text) {
+  const item = document.createElement("div");
+  item.className = "event-item";
+  item.textContent = text;
+
+  tempShowEventsPanel();
+  eventLog.prepend(item);
+
+  while (eventLog.children.length > 5) {
+    eventLog.removeChild(eventLog.lastChild);
+  }
+}
+
+function showAlert(title, message) {
+  if (alertTimer) {
+    clearTimeout(alertTimer);
+  }
+
+  alertTitle.textContent = title;
+  alertMessage.textContent = message;
+  alertBox.classList.remove("hidden");
+
+  // Force animation replay for repeated alerts.
+  alertBox.style.animation = "none";
+  void alertBox.offsetWidth;
+  alertBox.style.animation = "";
+
+  alertTimer = setTimeout(() => {
+    alertBox.classList.add("hidden");
+  }, ALERT_DURATION_MS);
+}
+
+function stopLevelUpScene() {
+  if (levelupTimer) {
+    clearTimeout(levelupTimer);
+    levelupTimer = null;
+  }
+
+  if (glowTimer) {
+    clearTimeout(glowTimer);
+    glowTimer = null;
+  }
+
+  if (shudderTimer) {
+    clearTimeout(shudderTimer);
+    shudderTimer = null;
+  }
+
+  clearPulseSequence();
+
+  levelupScene.classList.remove("active", "milestone", "dev-hold", "dev-persist");
+  levelupScene.classList.add("hidden");
+  levelupScene.setAttribute("aria-hidden", "true");
+  levelupScene.style.setProperty("--audio-glow", "0");
+  overlay.classList.remove("shudder");
+  overlay.classList.remove("levelup-active");
+}
+
+function playLevelUpSfx() {
+  // Hook this to your own sound system if desired.
+  // Example: window.dispatchEvent(new CustomEvent("overlay:levelup-sfx"));
+  window.dispatchEvent(new CustomEvent(SCENE_AUDIO_EVENT, {
+    detail: {
+      intensity: 0.82,
+      durationMs: 320
+    }
+  }));
+}
+
+function triggerLevelUpEffects(level, options = {}) {
+  const levelsGained = options.levelsGained || 1;
+  const isMilestone = options.isMilestone || level % 5 === 0;
+  const shockwavePower = Math.min(1.5, 0.72 + levelsGained * 0.24 + (isMilestone ? 0.28 : 0));
+  const rankName = getRankName(level);
+
+  const titleText = getLevelupTitle(levelsGained, isMilestone);
+  const subtitleText = isMilestone ? "Guild Promotion Ceremony" : "Guild Rank Increased";
+
+  levelupTitle.textContent = titleText;
+  levelupSubtitle.textContent = subtitleText;
+  levelupRankLine.textContent = `Now Level ${level} - ${rankName}`;
+  applyRankSigil(level, isMilestone);
+  seedProceduralParticles(isMilestone);
+
+  // Reset then replay the full-screen animation timeline.
+  stopLevelUpScene();
+  void levelupScene.offsetWidth;
+
+  levelupScene.classList.remove("hidden");
+  levelupScene.classList.add("active");
+
+  if (isMilestone || levelsGained >= 2) {
+    levelupScene.classList.add("milestone");
+  }
+
+  levelupScene.setAttribute("aria-hidden", "false");
+  overlay.classList.add("levelup-active");
+  playPulseSequence(shockwavePower, isMilestone);
+
+  showAlert(titleText, `${subtitleText}: Level ${level} ${rankName}`);
+  playLevelUpSfx();
+
+  if (DEV_MODE && DEV_HOLD_SCENE) {
+    levelupTimer = setTimeout(() => {
+      levelupScene.classList.add("dev-hold");
+    }, 1150);
+    return;
+  }
+
+  const hideAfterMs = DEV_MODE ? LEVELUP_DURATION_MS + DEV_EXTRA_VISIBLE_MS : LEVELUP_DURATION_MS;
+  levelupTimer = setTimeout(() => {
+    stopLevelUpScene();
+  }, hideAfterMs);
+}
+
+window.addEventListener(SCENE_AUDIO_EVENT, (event) => {
+  const detail = event.detail || {};
+  const intensity = Number(detail.intensity ?? 0.7);
+  const durationMs = Number(detail.durationMs ?? 260);
+  setSceneGlowIntensity(intensity, durationMs);
+});
+
+function levelUpCheck() {
+  let levelsGained = 0;
+
+  while (currentXP >= xpToNext) {
+    currentXP -= xpToNext;
+    currentLevel++;
+    xpToNext = Math.floor(xpToNext * 1.2);
+    levelsGained++;
+  }
+
+  if (levelsGained > 0) {
+    triggerLevelUpEffects(currentLevel, {
+      levelsGained,
+      isMilestone: currentLevel % 5 === 0
+    });
+
+    if (levelsGained > 1) {
+      addEventLog(`Massive breakthrough: +${levelsGained} ranks to Level ${currentLevel}.`);
+    } else {
+      addEventLog(`Guild Rank is now Level ${currentLevel}.`);
+    }
+  }
+}
+
+function triggerEvent(type, user = "Traveler") {
+  const config = overlayConfig.eventText[type];
+  const xpGain = overlayConfig.xpPerEvent[type] || 0;
+
+  if (!config) return;
+
+  const msg = config.message.replace("{user}", user);
+  const previousLevel = currentLevel;
+
+  applyQuestProgress(`event.${type}`, user);
+  awardXP(xpGain);
+
+  if (currentLevel === previousLevel) {
+    showAlert(config.title, msg);
+  }
+
+  addEventLog(`${config.title} - ${user} (+${xpGain} XP)`);
+}
+
+function bindChatIntegration() {
+  // Integration point 1: Dispatch browser events from your chat bridge.
+  // Example:
+  // window.dispatchEvent(new CustomEvent("overlay:chat-message", {
+  //   detail: { username: "Viewer123", message: "The guild stands with you!" }
+  // }));
+  window.addEventListener(CHAT_EVENT_NAME, (event) => {
+    const detail = event.detail || {};
+    handleIncomingChat(detail.username || detail.user, detail.message || detail.text || "");
+  });
+
+  // Integration point 2: Twitch Extension PubSub payloads (if chat is relayed through EBS).
+  if (window.Twitch && window.Twitch.ext && typeof window.Twitch.ext.listen === "function") {
+    window.Twitch.ext.listen("broadcast", (target, contentType, message) => {
+      try {
+        const payload = typeof message === "string" ? JSON.parse(message) : message;
+        handleOverlayPayload(payload);
+      } catch (error) {
+        // Ignore malformed broadcast payloads from unrelated extension traffic.
+      }
+    });
+  }
+
+  // Integration point 3: If you expose a tmi.js client globally, hook it here.
+  // Expected shape: window.overlayChatClient.on("message", (channel, tags, message) => ...)
+  if (window.overlayChatClient && typeof window.overlayChatClient.on === "function") {
+    window.overlayChatClient.on("message", (channel, tags, message) => {
+      handleIncomingChat(tags?.displayName || tags?.username, message);
+    });
+  }
+
+  // Integration point 4: local WebSocket relay from chat-bridge for OBS/local mode.
+  connectLocalChatSocket();
+}
+
+updateXPBar();
+renderQuestlinePanel();
+applySceneLayoutState();
+renderBossPanel();
+renderBossCountdown();
+renderXpBoostBadge();
+bindChatIntegration();
+updateOverlayScale();
+window.addEventListener("resize", updateOverlayScale);
+
+if (!bossCountdownTicker) {
+  bossCountdownTicker = setInterval(() => {
+    renderBossCountdown();
+    renderXpBoostBadge();
+  }, 1000);
+}
+
+// Debug helper from browser console if needed:
+// processChatParticipation("TestUser", "The tavern is alive tonight, guild!")
+
+// Test buttons from browser console if needed:
+// triggerEvent("follow", "TestUser")
+// triggerEvent("sub", "RockettFan")
+// triggerEvent("raid", "DungeonCrew")
+// stopLevelUpScene()
+
+if (window.Twitch && window.Twitch.ext) {
+  window.Twitch.ext.onAuthorized(function(auth) {
+    console.log("Twitch extension authorized", auth);
+  });
+}

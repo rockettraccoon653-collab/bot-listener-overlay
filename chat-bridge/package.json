@@ -1,0 +1,20 @@
+{
+  "name": "rockett-chat-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Relay Twitch chat messages to Twitch Extension broadcast payloads for overlay chat participation XP.",
+  "main": "bridge.js",
+  "scripts": {
+    "start": "node bridge.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "jsonwebtoken": "^9.0.2",
+    "obs-websocket-js": "^5.0.8",
+    "socket.io-client": "^4.8.3",
+    "sockjs-client": "^1.6.1",
+    "tmi.js": "^1.8.5",
+    "ws": "^8.18.0"
+  }
+}
