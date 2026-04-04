@@ -51,6 +51,7 @@ class BossEngine {
       tier: this.activeBoss.tier,
       visual: this.activeBoss.visual,
       summonedBy: this.activeBoss.summonedBy,
+      recentFighters: this.getRecentFighters(this.activeBoss),
       nextSpawnAt: 0
     };
   }

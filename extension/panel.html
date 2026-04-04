@@ -42,6 +42,37 @@
       letter-spacing: 0.5px;
     }
 
+    .transport-status {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 6px;
+      padding: 3px 8px;
+      border: 1px solid #6e5828;
+      border-radius: 999px;
+      background: rgba(20, 16, 10, 0.7);
+      color: #d8c79b;
+      font-size: 9px;
+      letter-spacing: 0.9px;
+      text-transform: uppercase;
+    }
+
+    .transport-status-live {
+      border-color: #4e8e5d;
+      color: #d7f0db;
+    }
+
+    .transport-status-waiting {
+      border-color: #6e5828;
+      color: #d8c79b;
+    }
+
+    .transport-status-stale,
+    .transport-status-error {
+      border-color: #b05a42;
+      color: #ffd2c2;
+    }
+
     /* ── Sections ── */
     .section {
       background: rgba(20, 16, 10, 0.8);
@@ -59,6 +90,84 @@
       margin-bottom: 6px;
       border-bottom: 1px solid #2a2010;
       padding-bottom: 4px;
+    }
+
+    .diagnostics-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 5px;
+    }
+
+    .diagnostic-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 10px;
+      color: #a99668;
+    }
+
+    .diagnostic-row strong {
+      color: #e8d8b0;
+      font-weight: normal;
+      text-align: right;
+      word-break: break-word;
+    }
+
+    .control-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 7px;
+    }
+
+    .control-field label {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 9px;
+      color: #8a7a50;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+    }
+
+    .control-field input,
+    .control-field select {
+      width: 100%;
+      background: #161109;
+      color: #e8d8b0;
+      border: 1px solid #3a2e18;
+      border-radius: 4px;
+      padding: 6px 7px;
+      font-size: 11px;
+      font-family: inherit;
+    }
+
+    .control-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    .control-actions button {
+      flex: 1;
+      background: linear-gradient(180deg, #3e2d15, #24190c);
+      color: #f0d8a0;
+      border: 1px solid #6c5125;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 10px;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+    }
+
+    .control-actions button:hover {
+      border-color: #a47a39;
+      color: #ffebc0;
+    }
+
+    .control-note {
+      margin-top: 6px;
+      font-size: 10px;
+      color: #8a7a50;
+      line-height: 1.4;
     }
 
     /* ── Boss Section ── */
@@ -302,6 +411,54 @@
   <div class="guild-header">
     <h1>⚔ Rockett's Guild</h1>
     <div class="subtitle">D&D Tavern — Live</div>
+    <div id="transport-status" class="transport-status transport-status-waiting">Awaiting relay...</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">🧭 Runtime Diagnostics</div>
+    <div class="diagnostics-grid">
+      <div class="diagnostic-row"><span>Requested Mode</span><strong id="diag-requested-mode">auto</strong></div>
+      <div class="diagnostic-row"><span>Active Source</span><strong id="diag-active-source">idle</strong></div>
+      <div class="diagnostic-row"><span>Expected Channel</span><strong id="diag-expected-channel">—</strong></div>
+      <div class="diagnostic-row"><span>Authorized Channel</span><strong id="diag-authorized-channel">—</strong></div>
+      <div class="diagnostic-row"><span>Local Relay</span><strong id="diag-local-ws">ws://127.0.0.1:8787</strong></div>
+      <div class="diagnostic-row"><span>Last Update</span><strong id="diag-last-update">never</strong></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">🛠 Testing Controls</div>
+    <div class="control-grid">
+      <div class="control-field">
+        <label for="control-transport-mode">Transport Mode</label>
+        <select id="control-transport-mode">
+          <option value="auto">auto</option>
+          <option value="local">local</option>
+          <option value="twitch">twitch</option>
+        </select>
+      </div>
+      <div class="control-field">
+        <label for="control-channel-id">Expected Channel ID</label>
+        <input id="control-channel-id" type="text" placeholder="Optional numeric broadcaster id" />
+      </div>
+      <div class="control-field">
+        <label for="control-local-ws">Local Relay URL</label>
+        <input id="control-local-ws" type="text" placeholder="ws://127.0.0.1:8787" />
+      </div>
+      <div class="control-field">
+        <label for="control-auth-timeout">Auth Timeout (ms)</label>
+        <input id="control-auth-timeout" type="number" min="2000" step="1000" />
+      </div>
+      <div class="control-field">
+        <label for="control-stale-after">Stale After (ms)</label>
+        <input id="control-stale-after" type="number" min="5000" step="1000" />
+      </div>
+    </div>
+    <div class="control-actions">
+      <button id="apply-runtime-overrides" type="button">Save And Reload</button>
+      <button id="clear-runtime-overrides" type="button">Clear Saved Overrides</button>
+    </div>
+    <div class="control-note">Saved overrides are shared through local storage, so the overlay can use the same settings on its next reload when served from the same origin.</div>
   </div>
 
   <!-- Boss Section -->

@@ -31,6 +31,7 @@ for (const key of REQUIRED_ENV) {
 
 const MIN_RELAY_LENGTH = Number(process.env.MIN_RELAY_LENGTH || 4);
 const MAX_RELAY_PER_10S = Number(process.env.MAX_RELAY_PER_10S || 18);
+const STATE_BROADCAST_INTERVAL_MS = Math.max(5000, Number(process.env.STATE_BROADCAST_INTERVAL_MS || 15000));
 const LOCAL_WS_ENABLED = String(process.env.LOCAL_WS_ENABLED || "true").toLowerCase() !== "false";
 const LOCAL_WS_PORT = Number(process.env.LOCAL_WS_PORT || 8787);
 const SCENE_RELAY_PROVIDER = String(process.env.SCENE_RELAY_PROVIDER || "streamlabs").toLowerCase();
@@ -54,6 +55,8 @@ const relayWindow = {
 const chatGoldWindow = new Map();
 const relayInstanceId = `${process.pid}-${Date.now().toString(36)}`;
 let relaySequence = 0;
+let activeXpBoostEndsAt = 0;
+const recentPurchases = [];
 
 const CHAT_GOLD_RULES = {
   cooldownMs: 120000,
@@ -78,6 +81,7 @@ function sanitizeUsername(rawUsername) {
 }
 
 async function broadcastOverlay(payload) {
+  rememberRuntimeState(payload);
   const stamped = stampRelayPayload(payload);
   broadcastLocal(stamped);
 
@@ -85,6 +89,30 @@ async function broadcastOverlay(payload) {
     await postExtensionBroadcast(stamped);
   } catch (error) {
     console.error("[bridge] extension broadcast failed:", error.message);
+  }
+}
+
+function rememberRuntimeState(payload) {
+  if (!payload || typeof payload !== "object") {
+    return;
+  }
+
+  if (payload.type === "shop_xpboost") {
+    activeXpBoostEndsAt = Math.max(0, Number(payload.endsAt || payload.expiresAt || 0));
+    return;
+  }
+
+  if (payload.type === "shop_purchase" && payload.by && payload.itemName) {
+    recentPurchases.unshift({
+      who: String(payload.by || ""),
+      itemName: String(payload.itemName || ""),
+      itemType: String(payload.itemType || ""),
+      at: Date.now()
+    });
+
+    if (recentPurchases.length > 5) {
+      recentPurchases.length = 5;
+    }
   }
 }
 
@@ -176,9 +204,59 @@ if (LOCAL_WS_ENABLED) {
   localWss.on("listening", () => {
     console.log(`[bridge] local ws relay active at ws://127.0.0.1:${LOCAL_WS_PORT}`);
   });
+  localWss.on("connection", (client) => {
+    sendLocalSnapshot(client);
+  });
   localWss.on("error", (error) => {
     console.error("[bridge] local ws error:", error.message);
   });
+}
+
+function sendLocalPayload(client, payload) {
+  if (!client || client.readyState !== 1) {
+    return;
+  }
+
+  client.send(JSON.stringify(stampRelayPayload(payload)));
+}
+
+function buildShopStatePayload() {
+  const leaderboard = viewerDb.getTopGold(5).map((entry) => {
+    const viewer = viewerDb.getViewer(entry.username);
+    return {
+      username: entry.username,
+      gold: entry.gold,
+      title: (viewer && viewer.title) || ""
+    };
+  });
+
+  const bossState = bossEngine.getState();
+  const xpBoostEndsAt = activeXpBoostEndsAt > Date.now() ? activeXpBoostEndsAt : 0;
+  if (!xpBoostEndsAt) {
+    activeXpBoostEndsAt = 0;
+  }
+
+  return {
+    type: "shop_state",
+    leaderboard,
+    boss: bossState.active ? {
+      key: bossState.bossKey,
+      name: bossState.bossName,
+      hp: bossState.hp,
+      maxHp: bossState.maxHp,
+      tier: bossState.tier,
+      visual: bossState.visual,
+      summonedBy: bossState.summonedBy,
+      recentFighters: bossState.recentFighters || []
+    } : null,
+    nextSpawnAt: Number(bossState.nextSpawnAt || 0),
+    xpBoostEndsAt,
+    purchases: recentPurchases.slice(0, 5)
+  };
+}
+
+function sendLocalSnapshot(client) {
+  sendLocalPayload(client, buildShopStatePayload());
 }
 
 function broadcastLocal(payload) {
@@ -549,23 +627,7 @@ chatClient.on("message", async (channel, tags, message, self) => {
 });
 
 function broadcastShopState() {
-  const leaderboard = viewerDb.getTopGold(5).map((entry) => {
-    const viewer = viewerDb.getViewer(entry.username);
-    return {
-      username: entry.username,
-      gold: entry.gold,
-      title: (viewer && viewer.title) || ""
-    };
-  });
-
-  const bossState = bossEngine.getState();
-
-  broadcastOverlay({
-    type: "shop_state",
-    leaderboard,
-    boss: bossState.active ? { hp: bossState.hp, maxHp: bossState.maxHp } : null,
-    xpBoostEndsAt: 0
-  });
+  broadcastOverlay(buildShopStatePayload());
 }
 
 chatClient.connect()
@@ -573,7 +635,10 @@ chatClient.connect()
     console.log("[bridge] connected to Twitch chat and relay is active.");
     bossEngine.start();
 
-    setInterval(broadcastShopState, 60 * 1000);
+    broadcastShopState();
+    console.log(`[bridge] state heartbeat every ${STATE_BROADCAST_INTERVAL_MS}ms`);
+
+    setInterval(broadcastShopState, STATE_BROADCAST_INTERVAL_MS);
 
     if (SCENE_RELAY_PROVIDER === "streamlabs") {
       connectStreamlabsSceneRelay();

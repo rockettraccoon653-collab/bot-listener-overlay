@@ -77,6 +77,7 @@ const xpBar = document.getElementById("xp-bar");
 const xpText = document.getElementById("xp-text");
 const levelLabel = document.getElementById("level-label");
 const xpBoostBadge = document.getElementById("xp-boost-badge");
+const transportStatus = document.getElementById("transport-status");
 const alertBox = document.getElementById("alert-box");
 const alertTitle = document.getElementById("alert-title");
 const alertMessage = document.getElementById("alert-message");
@@ -137,12 +138,45 @@ const SIGIL_FORMS = [
 ];
 
 const CHAT_EVENT_NAME = "overlay:chat-message";
+const RUNTIME_OVERRIDE_STORAGE_KEY = "rockett-dnd-runtime-overrides";
+
+function readStoredRuntimeOverrides() {
+  try {
+    const raw = window.localStorage.getItem(RUNTIME_OVERRIDE_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function readRuntimeOverrides() {
+  const params = new URLSearchParams(window.location.search);
+  const stored = readStoredRuntimeOverrides();
+  return {
+    transportMode: String(params.get("transport") || stored.transportMode || "").trim().toLowerCase(),
+    localWsUrl: String(params.get("ws") || stored.localWsUrl || "").trim(),
+    staleAfterMs: Number(params.get("staleAfterMs") || stored.staleAfterMs || 0),
+    expectedChannelId: String(params.get("channelId") || stored.expectedChannelId || "").trim(),
+    authTimeoutMs: Number(params.get("authTimeoutMs") || stored.authTimeoutMs || 0)
+  };
+}
+
+const runtimeOverrides = readRuntimeOverrides();
 
 // Chat progression config with fallbacks if config.js omits fields.
 const chatConfig = {
   enabled: overlayConfig.chatParticipation?.enabled ?? false,
+  transportMode: String(runtimeOverrides.transportMode || overlayConfig.chatParticipation?.transportMode || "auto").toLowerCase(),
   localWsEnabled: overlayConfig.chatParticipation?.localWsEnabled ?? true,
-  localWsUrl: overlayConfig.chatParticipation?.localWsUrl ?? "ws://127.0.0.1:8787",
+  localWsUrl: runtimeOverrides.localWsUrl || overlayConfig.chatParticipation?.localWsUrl || "ws://127.0.0.1:8787",
+  expectedChannelId: String(runtimeOverrides.expectedChannelId || overlayConfig.chatParticipation?.expectedChannelId || "").trim(),
+  authTimeoutMs: Math.max(2000, Number(runtimeOverrides.authTimeoutMs || overlayConfig.chatParticipation?.authTimeoutMs || 12000)),
+  staleAfterMs: Math.max(5000, Number(runtimeOverrides.staleAfterMs || overlayConfig.chatParticipation?.staleAfterMs || 45000)),
   messageCooldownMs: overlayConfig.chatParticipation?.messageCooldownMs ?? 10000,
   messagesPerReward: overlayConfig.chatParticipation?.messagesPerReward ?? 5,
   xpPerReward: overlayConfig.chatParticipation?.xpPerReward ?? 6,
@@ -223,6 +257,20 @@ let chatSocketRetryTimer = null;
 let bossCountdownTicker = null;
 const seenRelayEvents = new Map();
 
+const transportState = {
+  requestedMode: ["auto", "local", "twitch"].includes(chatConfig.transportMode) ? chatConfig.transportMode : "auto",
+  activeSource: "idle",
+  status: "waiting",
+  lastMessageAt: 0,
+  lastError: "",
+  authorizedChannelId: "",
+  isExtensionAuthorized: false,
+  authTimer: null,
+  bootstrapTimer: null,
+  transportListenerBound: false,
+  authHandlerBound: false
+};
+
 let alertTimer = null;
 let levelupTimer = null;
 let glowTimer = null;
@@ -255,6 +303,195 @@ function renderXpBoostBadge() {
   const ss = String(sec % 60).padStart(2, "0");
   xpBoostBadge.classList.remove("hidden");
   xpBoostBadge.textContent = `${multiplier}x XP Boost ${mm}:${ss}`;
+}
+
+function hasTwitchBroadcastSupport() {
+  return Boolean(window.Twitch && window.Twitch.ext && typeof window.Twitch.ext.listen === "function");
+}
+
+function normalizeChannelId(value) {
+  return String(value || "").trim();
+}
+
+function canUseLocalTransport() {
+  return chatConfig.enabled && chatConfig.localWsEnabled && transportState.requestedMode !== "twitch";
+}
+
+function shouldUseTwitchTransport() {
+  if (transportState.requestedMode === "local") {
+    return false;
+  }
+
+  return hasTwitchBroadcastSupport();
+}
+
+function clearTransportTimer(timerKey) {
+  if (!transportState[timerKey]) {
+    return;
+  }
+
+  clearTimeout(transportState[timerKey]);
+  transportState[timerKey] = null;
+}
+
+function startTwitchAuthorizationWatch() {
+  if (transportState.requestedMode === "local") {
+    return;
+  }
+
+  clearTransportTimer("authTimer");
+  transportState.authTimer = setTimeout(() => {
+    if (transportState.isExtensionAuthorized) {
+      return;
+    }
+
+    setTransportState({
+      activeSource: "twitch",
+      status: "error",
+      lastError: hasTwitchBroadcastSupport() ? "Auth timeout" : "No context"
+    });
+  }, chatConfig.authTimeoutMs);
+}
+
+function validateAuthorizedChannel(channelId) {
+  const expectedChannelId = normalizeChannelId(chatConfig.expectedChannelId);
+  if (!expectedChannelId || !channelId) {
+    return true;
+  }
+
+  return expectedChannelId === channelId;
+}
+
+function handleTwitchAuthorized(auth) {
+  const channelId = normalizeChannelId(auth?.channelId);
+  clearTransportTimer("authTimer");
+
+  if (!validateAuthorizedChannel(channelId)) {
+    setTransportState({
+      isExtensionAuthorized: false,
+      authorizedChannelId: channelId,
+      activeSource: "twitch",
+      status: "error",
+      lastError: "Channel mismatch"
+    });
+    addEventLog(`Twitch auth mismatch: expected ${chatConfig.expectedChannelId}, got ${channelId}.`);
+    return;
+  }
+
+  setTransportState({
+    isExtensionAuthorized: true,
+    authorizedChannelId: channelId,
+    activeSource: "twitch",
+    status: "waiting",
+    lastError: ""
+  });
+}
+
+function bindTwitchTransport() {
+  if (!hasTwitchBroadcastSupport()) {
+    return false;
+  }
+
+  if (!transportState.transportListenerBound) {
+    window.Twitch.ext.listen("broadcast", (_target, _contentType, message) => {
+      try {
+        const payload = typeof message === "string" ? JSON.parse(message) : message;
+        noteTransportActivity("twitch");
+        handleOverlayPayload(payload);
+      } catch (_error) {
+        // Ignore malformed broadcast payloads from unrelated extension traffic.
+      }
+    });
+    transportState.transportListenerBound = true;
+  }
+
+  if (!transportState.authHandlerBound && typeof window.Twitch.ext.onAuthorized === "function") {
+    window.Twitch.ext.onAuthorized((auth) => {
+      handleTwitchAuthorized(auth);
+    });
+    transportState.authHandlerBound = true;
+  }
+
+  setTransportState({ activeSource: "twitch", status: "waiting", lastError: "" });
+  startTwitchAuthorizationWatch();
+  return true;
+}
+
+function beginTransportBootstrap() {
+  if (transportState.requestedMode === "local") {
+    connectLocalChatSocket();
+    return;
+  }
+
+  if (bindTwitchTransport()) {
+    return;
+  }
+
+  const giveUpAfterMs = transportState.requestedMode === "twitch" ? chatConfig.authTimeoutMs : 1500;
+  const startedAt = Date.now();
+  setTransportState({ activeSource: "twitch", status: "waiting", lastError: "Loading" });
+
+  const pollForTwitch = () => {
+    if (bindTwitchTransport()) {
+      clearTransportTimer("bootstrapTimer");
+      return;
+    }
+
+    if (Date.now() - startedAt >= giveUpAfterMs) {
+      clearTransportTimer("bootstrapTimer");
+      if (transportState.requestedMode === "twitch") {
+        setTransportState({ activeSource: "twitch", status: "error", lastError: "No context" });
+        return;
+      }
+
+      connectLocalChatSocket();
+      return;
+    }
+
+    transportState.bootstrapTimer = setTimeout(pollForTwitch, 250);
+  };
+
+  transportState.bootstrapTimer = setTimeout(pollForTwitch, 250);
+}
+
+function setTransportState(nextState) {
+  Object.assign(transportState, nextState || {});
+  renderTransportStatus();
+}
+
+function noteTransportActivity(source) {
+  setTransportState({
+    activeSource: source,
+    status: "live",
+    lastMessageAt: Date.now(),
+    lastError: ""
+  });
+}
+
+function renderTransportStatus() {
+  if (!transportStatus) return;
+
+  let status = transportState.status;
+  const now = Date.now();
+  if (transportState.lastMessageAt && now - transportState.lastMessageAt > chatConfig.staleAfterMs && status !== "error") {
+    status = "stale";
+  }
+
+  const sourceLabel = (transportState.activeSource === "idle" ? transportState.requestedMode : transportState.activeSource).toUpperCase();
+  let detail = "Awaiting relay";
+
+  if (status === "live") {
+    detail = "Live";
+  } else if (status === "stale") {
+    detail = "Stale";
+  } else if (status === "error") {
+    detail = transportState.lastError || "Error";
+  } else if (transportState.isExtensionAuthorized && transportState.activeSource === "idle") {
+    detail = "Authorized";
+  }
+
+  transportStatus.className = `transport-status transport-status-${status}`;
+  transportStatus.textContent = `${sourceLabel} ${detail}`;
 }
 
 function showShopToastMessage(title, body) {
@@ -472,6 +709,40 @@ function handleOverlayPayload(payload) {
     xpBoostState.expiresAt = Number(payload.endsAt || payload.expiresAt || 0);
     renderXpBoostBadge();
     showShopToastMessage("XP Boost Active", `${payload.by || "A traveler"} activated ${xpBoostState.multiplier}x XP.`);
+    return;
+  }
+
+  if (payload.type === "shop_state") {
+    if (payload.boss) {
+      bossState.active = true;
+      bossState.key = payload.boss.key || bossState.key;
+      bossState.name = payload.boss.name || bossState.name || "Unknown Boss";
+      bossState.tier = Number(payload.boss.tier || bossState.tier || 1);
+      bossState.visual = payload.boss.visual || bossState.visual || null;
+      bossState.hp = Number(payload.boss.hp || bossState.hp || 0);
+      bossState.maxHp = Number(payload.boss.maxHp || bossState.maxHp || 0);
+      bossState.nextSpawnAt = 0;
+      bossState.recentFighters = Array.isArray(payload.boss.recentFighters) ? payload.boss.recentFighters : [];
+      bossLastHit.textContent = `Summoned by ${payload.boss.summonedBy || "the guild"}.`;
+      renderBossPanel();
+    } else {
+      bossState.active = false;
+      bossState.key = "";
+      bossState.name = "";
+      bossState.hp = 0;
+      bossState.maxHp = 0;
+      bossState.recentFighters = [];
+      bossThresholdText.textContent = "";
+      renderBossPanel();
+    }
+
+    bossState.nextSpawnAt = Number(payload.nextSpawnAt || bossState.nextSpawnAt || 0);
+    if (typeof payload.xpBoostEndsAt === "number") {
+      xpBoostState.expiresAt = Number(payload.xpBoostEndsAt || 0);
+      xpBoostState.multiplier = xpBoostState.expiresAt > Date.now() ? Math.max(2, xpBoostState.multiplier) : 1;
+      renderXpBoostBadge();
+    }
+    renderBossCountdown();
     return;
   }
 
@@ -921,7 +1192,7 @@ function processChatParticipation(username, messageText) {
 }
 
 function connectLocalChatSocket() {
-  if (!chatConfig.enabled || !chatConfig.localWsEnabled) return;
+  if (!canUseLocalTransport()) return;
 
   if (chatLocalSocket && (chatLocalSocket.readyState === WebSocket.OPEN || chatLocalSocket.readyState === WebSocket.CONNECTING)) {
     return;
@@ -935,12 +1206,14 @@ function connectLocalChatSocket() {
   }
 
   chatLocalSocket.addEventListener("open", () => {
+    setTransportState({ activeSource: "local", status: "waiting", lastError: "" });
     addEventLog("Local chat relay linked.");
   });
 
   chatLocalSocket.addEventListener("message", (event) => {
     try {
       const payload = JSON.parse(event.data);
+      noteTransportActivity("local");
       handleOverlayPayload(payload);
     } catch (error) {
       // Ignore malformed socket payloads.
@@ -948,15 +1221,21 @@ function connectLocalChatSocket() {
   });
 
   chatLocalSocket.addEventListener("close", () => {
+    setTransportState({ activeSource: "local", status: "stale", lastError: "Disconnected" });
     scheduleLocalSocketReconnect();
   });
 
   chatLocalSocket.addEventListener("error", () => {
+    setTransportState({ activeSource: "local", status: "error", lastError: "Reconnect" });
     scheduleLocalSocketReconnect();
   });
 }
 
 function scheduleLocalSocketReconnect() {
+  if (!canUseLocalTransport()) {
+    return;
+  }
+
   if (chatSocketRetryTimer) {
     return;
   }
@@ -1272,18 +1551,6 @@ function bindChatIntegration() {
     handleIncomingChat(detail.username || detail.user, detail.message || detail.text || "");
   });
 
-  // Integration point 2: Twitch Extension PubSub payloads (if chat is relayed through EBS).
-  if (window.Twitch && window.Twitch.ext && typeof window.Twitch.ext.listen === "function") {
-    window.Twitch.ext.listen("broadcast", (target, contentType, message) => {
-      try {
-        const payload = typeof message === "string" ? JSON.parse(message) : message;
-        handleOverlayPayload(payload);
-      } catch (error) {
-        // Ignore malformed broadcast payloads from unrelated extension traffic.
-      }
-    });
-  }
-
   // Integration point 3: If you expose a tmi.js client globally, hook it here.
   // Expected shape: window.overlayChatClient.on("message", (channel, tags, message) => ...)
   if (window.overlayChatClient && typeof window.overlayChatClient.on === "function") {
@@ -1292,8 +1559,8 @@ function bindChatIntegration() {
     });
   }
 
-  // Integration point 4: local WebSocket relay from chat-bridge for OBS/local mode.
-  connectLocalChatSocket();
+  // Integration point 4: choose Twitch broadcast or local relay.
+  beginTransportBootstrap();
 }
 
 updateXPBar();
@@ -1310,6 +1577,7 @@ if (!bossCountdownTicker) {
   bossCountdownTicker = setInterval(() => {
     renderBossCountdown();
     renderXpBoostBadge();
+    renderTransportStatus();
   }, 1000);
 }
 
@@ -1322,8 +1590,4 @@ if (!bossCountdownTicker) {
 // triggerEvent("raid", "DungeonCrew")
 // stopLevelUpScene()
 
-if (window.Twitch && window.Twitch.ext) {
-  window.Twitch.ext.onAuthorized(function(auth) {
-    console.log("Twitch extension authorized", auth);
-  });
-}
+renderTransportStatus();

@@ -1,40 +1,40 @@
 {
   "viewers": {
     "rockettraccoon12": {
-      "gold": 1,
+      "gold": 3,
       "title": "",
       "className": "peasant",
       "weapon": "",
       "totalDamage": 0,
-      "lastChatAt": 1774932100869,
-      "updatedAt": 1774932100869
+      "lastChatAt": 1775093988975,
+      "updatedAt": 1775093988975
     },
     "mrcrumbsnatchers": {
-      "gold": 2,
+      "gold": 4,
       "title": "",
       "className": "peasant",
       "weapon": "",
       "totalDamage": 0,
-      "lastChatAt": 1774931993231,
-      "updatedAt": 1774931993233
+      "lastChatAt": 1775093921045,
+      "updatedAt": 1775093921045
     },
     "adashofnerd": {
-      "gold": 2,
+      "gold": 4,
       "title": "",
       "className": "peasant",
       "weapon": "",
       "totalDamage": 0,
-      "lastChatAt": 1774932102194,
-      "updatedAt": 1774932102194
+      "lastChatAt": 1775093917031,
+      "updatedAt": 1775093917032
     },
     "sery_bot": {
-      "gold": 2,
+      "gold": 3,
       "title": "",
       "className": "peasant",
       "weapon": "",
       "totalDamage": 0,
-      "lastChatAt": 1774932054032,
-      "updatedAt": 1774932054034
+      "lastChatAt": 1775093719646,
+      "updatedAt": 1775093719647
     },
     "ollitude": {
       "gold": 3,
@@ -44,6 +44,24 @@
       "totalDamage": 0,
       "lastChatAt": 1774932104684,
       "updatedAt": 1774932104686
+    },
+    "little_v0id": {
+      "gold": 1,
+      "title": "",
+      "className": "peasant",
+      "weapon": "",
+      "totalDamage": 0,
+      "lastChatAt": 1775093885545,
+      "updatedAt": 1775093885546
+    },
+    "liz_zerd": {
+      "gold": 1,
+      "title": "",
+      "className": "peasant",
+      "weapon": "",
+      "totalDamage": 0,
+      "lastChatAt": 1775093997167,
+      "updatedAt": 1775093997167
     }
   }
 }
