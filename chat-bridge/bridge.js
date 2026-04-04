@@ -7,6 +7,7 @@ const OBSWebSocketModule = require("obs-websocket-js");
 const viewerDb = require("./viewer-db");
 const { BossEngine } = require("./boss-engine");
 const { ShopHandler } = require("./shop-handler");
+const { toOverlayRelayEvents } = require("./overlay-relay");
 require("dotenv").config();
 
 const OBSWebSocket = OBSWebSocketModule.default || OBSWebSocketModule;
@@ -34,6 +35,7 @@ const MAX_RELAY_PER_10S = Number(process.env.MAX_RELAY_PER_10S || 18);
 const STATE_BROADCAST_INTERVAL_MS = Math.max(5000, Number(process.env.STATE_BROADCAST_INTERVAL_MS || 15000));
 const LOCAL_WS_ENABLED = String(process.env.LOCAL_WS_ENABLED || "true").toLowerCase() !== "false";
 const LOCAL_WS_PORT = Number(process.env.LOCAL_WS_PORT || 8787);
+const LOCAL_WS_DEBUG = String(process.env.LOCAL_WS_DEBUG || "true").toLowerCase() !== "false";
 const SCENE_RELAY_PROVIDER = String(process.env.SCENE_RELAY_PROVIDER || "streamlabs").toLowerCase();
 
 const STREAMLABS_SCENE_RELAY_ENABLED = String(process.env.STREAMLABS_SCENE_RELAY_ENABLED || "true").toLowerCase() !== "false";
@@ -73,6 +75,7 @@ let streamlabsReconnectTimer = null;
 let streamlabsPollTimer = null;
 let streamlabsRpcId = 1;
 let activeSceneId = null;
+let localWsClientId = 0;
 const streamlabsPending = new Map();
 
 function sanitizeUsername(rawUsername) {
@@ -83,7 +86,7 @@ function sanitizeUsername(rawUsername) {
 async function broadcastOverlay(payload) {
   rememberRuntimeState(payload);
   const stamped = stampRelayPayload(payload);
-  broadcastLocal(stamped);
+  broadcastLocalPayloads(payload);
 
   try {
     await postExtensionBroadcast(stamped);
@@ -205,6 +208,17 @@ if (LOCAL_WS_ENABLED) {
     console.log(`[bridge] local ws relay active at ws://127.0.0.1:${LOCAL_WS_PORT}`);
   });
   localWss.on("connection", (client) => {
+    client._relayDebugId = ++localWsClientId;
+    logLocalWsEvent("connect", { clientId: client._relayDebugId });
+    client.on("message", (rawMessage) => {
+      logLocalWsEvent("incoming", rawMessage, `client=${client._relayDebugId}`);
+    });
+    client.on("close", () => {
+      logLocalWsEvent("disconnect", { clientId: client._relayDebugId });
+    });
+    client.on("error", (error) => {
+      console.error(`[bridge][ws][client-error] client=${client._relayDebugId} ${error.message}`);
+    });
     sendLocalSnapshot(client);
   });
   localWss.on("error", (error) => {
@@ -217,6 +231,7 @@ function sendLocalPayload(client, payload) {
     return;
   }
 
+  logLocalWsEvent("outgoing", payload, `client=${client._relayDebugId || "snapshot"}`);
   client.send(JSON.stringify(stampRelayPayload(payload)));
 }
 
@@ -265,9 +280,52 @@ function broadcastLocal(payload) {
   const serialized = JSON.stringify(payload);
   for (const client of localWss.clients) {
     if (client.readyState === 1) {
+      logLocalWsEvent("outgoing", payload, `client=${client._relayDebugId || "broadcast"}`);
       client.send(serialized);
     }
   }
+}
+
+function broadcastLocalPayloads(payload) {
+  const localPayloads = buildLocalRelayPayloads(payload);
+  for (const localPayload of localPayloads) {
+    broadcastLocal(localPayload);
+  }
+}
+
+function buildLocalRelayPayloads(payload) {
+  const localPayloads = toOverlayRelayEvents(payload);
+  if (!localPayloads.length) {
+    return [];
+  }
+
+  return localPayloads.map((entry) => stampRelayPayload(entry));
+}
+
+function logLocalWsEvent(direction, payload, details = "") {
+  if (!LOCAL_WS_DEBUG) {
+    return;
+  }
+
+  let summary = "";
+  if (typeof payload === "string" || Buffer.isBuffer(payload)) {
+    summary = String(payload);
+  } else if (payload && typeof payload === "object") {
+    try {
+      summary = JSON.stringify(payload);
+    } catch (error) {
+      summary = String(payload && payload.type || "unknown");
+    }
+  } else {
+    summary = String(payload || "");
+  }
+
+  if (summary.length > 400) {
+    summary = `${summary.slice(0, 397)}...`;
+  }
+
+  const suffix = details ? ` ${details}` : "";
+  console.log(`[bridge][ws][${direction}]${suffix} ${summary}`.trim());
 }
 
 function scheduleObsReconnect() {

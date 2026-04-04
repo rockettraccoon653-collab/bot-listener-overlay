@@ -1,22 +1,22 @@
 {
   "viewers": {
     "rockettraccoon12": {
-      "gold": 3,
+      "gold": 1203,
       "title": "",
       "className": "peasant",
       "weapon": "",
       "totalDamage": 0,
       "lastChatAt": 1775093988975,
-      "updatedAt": 1775093988975
+      "updatedAt": 1775339405026
     },
     "mrcrumbsnatchers": {
-      "gold": 4,
+      "gold": 719,
       "title": "",
-      "className": "peasant",
-      "weapon": "",
-      "totalDamage": 0,
-      "lastChatAt": 1775093921045,
-      "updatedAt": 1775093921045
+      "className": "barbarian",
+      "weapon": "blood-sword",
+      "totalDamage": 214,
+      "lastChatAt": 1775339544446,
+      "updatedAt": 1775339544446
     },
     "adashofnerd": {
       "gold": 4,

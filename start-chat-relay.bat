@@ -2,30 +2,30 @@
 setlocal
 title Rockett DnD Overlay - Stream Launcher
 
+set "ROOT_DIR=%~dp0"
+set "CHAT_BRIDGE_DIR=%ROOT_DIR%chat-bridge"
+set "WEB_PORT=3000"
+set "RELAY_PORT=8787"
+set "RELAY_URL=ws://127.0.0.1:%RELAY_PORT%"
+set "OVERLAY_URL=http://localhost:%WEB_PORT%/index.html?transport=local^&ws=%RELAY_URL%"
+
 echo.
 echo ==========================================
 echo   Rockett DnD Overlay - Stream Launcher
 echo ==========================================
 echo.
 
-:: ── Step 1: Free port 8787 if something is already using it ──────────────
-echo [1/3] Checking port 8787...
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr /R "\<8787\>"') do (
-  set PID=%%a
-)
-if defined PID (
-  echo [INFO] Port 8787 in use by PID %PID% — stopping it...
-  taskkill /PID %PID% /F >nul 2>&1
-  timeout /t 1 /nobreak >nul
-  echo [OK] Port freed.
-) else (
-  echo [OK] Port 8787 is free.
-)
+:: ── Step 1: Verify fixed local ports are free ─────────────────────────────
+echo [1/6] Checking local ports...
+call :ensure_port_free %WEB_PORT% "web server"
+if errorlevel 1 goto :startup_failed
+call :ensure_port_free %RELAY_PORT% "relay"
+if errorlevel 1 goto :startup_failed
 
 :: ── Step 2: Install dependencies if needed ──────────────────────────────
 echo.
-echo [2/3] Checking dependencies...
-cd /d "%~dp0chat-bridge"
+echo [2/6] Checking dependencies...
+cd /d "%CHAT_BRIDGE_DIR%"
 if errorlevel 1 (
   echo [ERROR] Could not open chat-bridge folder.
   pause
@@ -45,15 +45,95 @@ if not exist "node_modules" (
   echo [OK] Dependencies present.
 )
 
-:: ── Step 3: Start the relay ──────────────────────────────────────────────
+if not exist "node_modules\.bin\http-server.cmd" (
+  echo [INFO] Local web server dependency missing -- installing package updates...
+  call npm install
+  if errorlevel 1 (
+    echo [ERROR] npm install failed while adding local web server dependencies.
+    pause
+    exit /b 1
+  )
+  echo [OK] Local web server dependency installed.
+)
+
+:: ── Step 3: Validate project files ───────────────────────────────────────
 echo.
-echo [3/3] Starting chat relay...
+echo [3/6] Running project checks...
+call npm run check
+if errorlevel 1 (
+  echo [ERROR] Project checks failed.
+  pause
+  exit /b 1
+)
+
+:: ── Step 4: Start the relay in its own window ────────────────────────────
+echo.
+echo [4/6] Starting chat relay...
 echo       (Twitch chat + Streamlabs scene detection)
+start "Rockett Chat Relay" /D "%CHAT_BRIDGE_DIR%" cmd /k npm start
+call :wait_for_port %RELAY_PORT% "relay"
+if errorlevel 1 goto :startup_failed
+
+:: ── Step 5: Start the fixed local overlay server ──────────────────────────
 echo.
-echo ── Relay running ── Press Ctrl+C to stop ───────────────────────────────
+echo [5/6] Starting local overlay web server...
+echo       Serving project root on http://localhost:%WEB_PORT%/
+start "Rockett Overlay Server" /D "%CHAT_BRIDGE_DIR%" cmd /k npm run serve-overlay
+call :wait_for_port %WEB_PORT% "web server"
+if errorlevel 1 goto :startup_failed
+
+:: ── Step 6: Open the fixed local overlay URL ──────────────────────────────
 echo.
-call npm start
+echo [6/6] Opening overlay...
+echo       %OVERLAY_URL%
+start "" "%OVERLAY_URL%"
 
 echo.
-echo [INFO] Relay stopped.
+echo [OK] Local launcher started.
+echo      Relay window: Rockett Chat Relay
+echo      Web server window: Rockett Overlay Server
+echo      Overlay URL: %OVERLAY_URL%
+echo      Close both windows to stop local testing.
 pause
+exit /b 0
+
+:ensure_port_free
+set "CHECK_PORT=%~1"
+set "CHECK_NAME=%~2"
+netstat -ano | findstr /R /C:":%CHECK_PORT% .*LISTENING" >nul 2>&1
+if not errorlevel 1 (
+  echo [ERROR] Port %CHECK_PORT% is already in use for %CHECK_NAME%.
+  echo         Stop the existing process and run this launcher again.
+  exit /b 1
+)
+
+echo [OK] Port %CHECK_PORT% is free for %CHECK_NAME%.
+exit /b 0
+
+:wait_for_port
+set "WAIT_PORT=%~1"
+set "WAIT_NAME=%~2"
+set /a WAIT_RETRIES=0
+
+:wait_for_port_loop
+netstat -ano | findstr /R /C:":%WAIT_PORT% .*LISTENING" >nul 2>&1
+if not errorlevel 1 (
+  echo [OK] Port %WAIT_PORT% is live for %WAIT_NAME%.
+  exit /b 0
+)
+
+set /a WAIT_RETRIES+=1
+if %WAIT_RETRIES% GEQ 15 (
+  echo [ERROR] %WAIT_NAME% did not start on port %WAIT_PORT%.
+  echo         Check the "%WAIT_NAME%" window for startup errors.
+  exit /b 1
+)
+
+timeout /t 1 /nobreak >nul
+goto :wait_for_port_loop
+
+:startup_failed
+echo.
+echo [ERROR] Local startup aborted.
+pause
+exit /b 1

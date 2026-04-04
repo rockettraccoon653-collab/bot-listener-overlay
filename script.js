@@ -317,6 +317,35 @@ function canUseLocalTransport() {
   return chatConfig.enabled && chatConfig.localWsEnabled && transportState.requestedMode !== "twitch";
 }
 
+function isLocalDevRelayMode() {
+  const hostname = String(window.location.hostname || "").toLowerCase();
+  const isLocalHost = !hostname || hostname === "localhost" || hostname === "127.0.0.1";
+  return canUseLocalTransport() && (transportState.requestedMode === "local" || window.location.protocol === "file:" || isLocalHost);
+}
+
+function syncOverlayDebugBindings() {
+  if (!isLocalDevRelayMode()) {
+    try {
+      delete window.overlaySocket;
+      delete window.testOverlayEvent;
+    } catch (_error) {
+      window.overlaySocket = undefined;
+      window.testOverlayEvent = undefined;
+    }
+    return;
+  }
+
+  window.overlaySocket = chatLocalSocket;
+  window.testOverlayEvent = (payload) => {
+    handleOverlayPayload(payload);
+    return payload;
+  };
+}
+
+function shouldLogOverlayWsDebug() {
+  return isLocalDevRelayMode();
+}
+
 function shouldUseTwitchTransport() {
   if (transportState.requestedMode === "local") {
     return false;
@@ -674,8 +703,31 @@ function handleOverlayPayload(payload) {
   if (!payload || typeof payload !== "object") return;
   if (!shouldProcessRelayPayload(payload)) return;
 
+  if (payload.type === "boss_update") {
+    applyBossUpdatePayload(payload);
+    return;
+  }
+
+  if (payload.type === "player_attack") {
+    bossLastHit.textContent = `${payload.by || "Traveler"} used ${payload.command || "!attack"} for ${payload.damage || 0} damage.`;
+    addEventLog(`Attack: ${payload.by || "Traveler"} dealt ${payload.damage || 0} damage.`);
+    return;
+  }
+
+  if (payload.type === "attack") {
+    bossLastHit.textContent = `${payload.by || "Traveler"} used ${payload.command || "!attack"} for ${payload.damage || 0} damage.`;
+    addEventLog(`Attack: ${payload.by || "Traveler"} dealt ${payload.damage || 0} damage.`);
+    return;
+  }
+
   if (payload.type === "chat" && payload.username && payload.message) {
     handleIncomingChat(payload.username, payload.message);
+    return;
+  }
+
+  if (payload.type === "shop") {
+    showShopToastMessage("Shop Purchase", `${payload.by || "A traveler"} bought ${payload.itemName || "an item"}.`);
+    addEventLog(`Shop: ${payload.by || "Traveler"} purchased ${payload.itemName || "item"}.`);
     return;
   }
 
@@ -820,6 +872,74 @@ function handleOverlayPayload(payload) {
   if (payload.type === "boss_rewards") {
     awardXP(Number(payload.guildXp || 0));
     addEventLog(`Guild reward: +${payload.guildXp || 0} XP for boss victory.`);
+  }
+}
+
+function applyBossUpdatePayload(payload) {
+  const boss = payload.boss || {};
+
+  if (payload.event === "spawn") {
+    bossState.active = true;
+    bossState.key = boss.key || "";
+    bossState.name = boss.name || "Unknown Boss";
+    bossState.tier = Number(boss.tier || 1);
+    bossState.visual = boss.visual || null;
+    bossState.hp = Number(boss.hp || 0);
+    bossState.maxHp = Number(boss.maxHp || 0);
+    bossState.nextSpawnAt = 0;
+    bossState.recentFighters = Array.isArray(boss.recentFighters) ? boss.recentFighters : [];
+    bossThresholdText.textContent = "";
+    bossLastHit.textContent = `Summoned by ${boss.summonedBy || "the guild"}.`;
+    renderBossPanel();
+    renderBossCountdown();
+    showShopToastMessage("Boss Spawned", `${bossState.name} entered the battlefield.`);
+    return;
+  }
+
+  if (payload.event === "damage") {
+    bossState.active = true;
+    bossState.key = boss.key || bossState.key;
+    bossState.name = boss.name || bossState.name;
+    bossState.hp = Number(boss.hp || bossState.hp);
+    bossState.maxHp = Number(boss.maxHp || bossState.maxHp);
+    if (Array.isArray(boss.recentFighters)) {
+      bossState.recentFighters = boss.recentFighters;
+    }
+    bossLastHit.textContent = `${payload.lastAttack?.by || "Traveler"} used ${payload.lastAttack?.command || "!attack"} for ${payload.lastAttack?.damage || 0} damage.`;
+    renderBossPanel();
+    return;
+  }
+
+  if (payload.event === "threshold") {
+    const thresholdPercent = Math.round(Number(payload.threshold || 0) * 100);
+    bossThresholdText.textContent = `${thresholdPercent}% Rage`;
+    triggerScreenShudder(1.1);
+    return;
+  }
+
+  if (payload.event === "defeat") {
+    showShopToastMessage("Boss Defeated", `${boss.name || "Boss"} was slain by the guild.`);
+    bossState.active = false;
+    bossState.key = "";
+    bossState.name = "";
+    bossState.hp = 0;
+    bossState.maxHp = 0;
+    bossState.recentFighters = [];
+    bossThresholdText.textContent = "";
+    renderBossPanel();
+    return;
+  }
+
+  if (payload.event === "retreat") {
+    showShopToastMessage("Boss Retreated", `${boss.name || "Boss"} escaped into the dark.`);
+    bossState.active = false;
+    bossState.key = "";
+    bossState.name = "";
+    bossState.hp = 0;
+    bossState.maxHp = 0;
+    bossState.recentFighters = [];
+    bossThresholdText.textContent = "";
+    renderBossPanel();
   }
 }
 
@@ -1200,12 +1320,22 @@ function connectLocalChatSocket() {
 
   try {
     chatLocalSocket = new WebSocket(chatConfig.localWsUrl);
+    if (shouldLogOverlayWsDebug()) {
+      console.log(`[overlay][ws][connect] ${chatConfig.localWsUrl}`);
+    }
+    syncOverlayDebugBindings();
   } catch (error) {
+    if (shouldLogOverlayWsDebug()) {
+      console.error(`[overlay][ws][connect-error] ${chatConfig.localWsUrl}`, error);
+    }
     scheduleLocalSocketReconnect();
     return;
   }
 
   chatLocalSocket.addEventListener("open", () => {
+    if (shouldLogOverlayWsDebug()) {
+      console.log(`[overlay][ws][open] ${chatConfig.localWsUrl}`);
+    }
     setTransportState({ activeSource: "local", status: "waiting", lastError: "" });
     addEventLog("Local chat relay linked.");
   });
@@ -1213,19 +1343,31 @@ function connectLocalChatSocket() {
   chatLocalSocket.addEventListener("message", (event) => {
     try {
       const payload = JSON.parse(event.data);
+      logOverlayWsMessage("incoming", payload);
       noteTransportActivity("local");
       handleOverlayPayload(payload);
     } catch (error) {
-      // Ignore malformed socket payloads.
+      if (shouldLogOverlayWsDebug()) {
+        console.error("[overlay][ws][parse-error]", event.data, error);
+      }
     }
   });
 
-  chatLocalSocket.addEventListener("close", () => {
+  chatLocalSocket.addEventListener("close", (event) => {
+    if (shouldLogOverlayWsDebug()) {
+      console.warn(`[overlay][ws][close] code=${event.code} reason=${event.reason || "n/a"}`);
+    }
+    chatLocalSocket = null;
+    syncOverlayDebugBindings();
     setTransportState({ activeSource: "local", status: "stale", lastError: "Disconnected" });
     scheduleLocalSocketReconnect();
   });
 
-  chatLocalSocket.addEventListener("error", () => {
+  chatLocalSocket.addEventListener("error", (event) => {
+    if (shouldLogOverlayWsDebug()) {
+      console.error("[overlay][ws][error]", event);
+    }
+    syncOverlayDebugBindings();
     setTransportState({ activeSource: "local", status: "error", lastError: "Reconnect" });
     scheduleLocalSocketReconnect();
   });
@@ -1242,8 +1384,35 @@ function scheduleLocalSocketReconnect() {
 
   chatSocketRetryTimer = setTimeout(() => {
     chatSocketRetryTimer = null;
+    if (shouldLogOverlayWsDebug()) {
+      console.log(`[overlay][ws][reconnect] retrying ${chatConfig.localWsUrl}`);
+    }
     connectLocalChatSocket();
   }, 2500);
+}
+
+function logOverlayWsMessage(direction, payload) {
+  if (!shouldLogOverlayWsDebug()) {
+    return;
+  }
+
+  let summary = "";
+
+  if (payload && typeof payload === "object") {
+    try {
+      summary = JSON.stringify(payload);
+    } catch (error) {
+      summary = String(payload.type || "unknown");
+    }
+  } else {
+    summary = String(payload || "");
+  }
+
+  if (summary.length > 400) {
+    summary = `${summary.slice(0, 397)}...`;
+  }
+
+  console.log(`[overlay][ws][${direction}] ${summary}`);
 }
 
 function getRankName(level) {
@@ -1569,6 +1738,7 @@ applySceneLayoutState();
 renderBossPanel();
 renderBossCountdown();
 renderXpBoostBadge();
+syncOverlayDebugBindings();
 bindChatIntegration();
 updateOverlayScale();
 window.addEventListener("resize", updateOverlayScale);
