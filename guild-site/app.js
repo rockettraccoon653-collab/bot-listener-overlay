@@ -48,6 +48,16 @@ const state = {
   }
 };
 
+function getApiBaseUrl() {
+  return String(window.GUILD_HALL_CONFIG?.apiBaseUrl || "").trim().replace(/\/+$/, "");
+}
+
+function buildApiUrl(path) {
+  const normalizedPath = String(path || "").startsWith("/") ? String(path) : `/${String(path || "")}`;
+  const apiBaseUrl = getApiBaseUrl();
+  return apiBaseUrl ? `${apiBaseUrl}${normalizedPath}` : normalizedPath;
+}
+
 function isProfileLocked() {
   return Boolean(state.dashboard?.onboarding?.required || state.dashboard?.runtime?.profileAccessLocked);
 }
@@ -649,7 +659,7 @@ async function loadDashboard(player) {
     params.set("auth", state.authToken);
   }
   const query = params.toString();
-  const response = await fetch(`/api/guild/dashboard${query ? `?${query}` : ""}`, { cache: "no-store" });
+  const response = await fetch(buildApiUrl(`/api/guild/dashboard${query ? `?${query}` : ""}`), { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
   }
@@ -686,7 +696,7 @@ async function submitGuildAction(endpoint, payload, section) {
   renderDashboard();
 
   try {
-    const response = await fetch(endpoint, {
+    const response = await fetch(buildApiUrl(endpoint), {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -735,7 +745,7 @@ async function createCharacter() {
   creationFeedback.className = "feedback-box";
 
   try {
-    const response = await fetch("/api/guild/character/create", {
+    const response = await fetch(buildApiUrl("/api/guild/character/create"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json"

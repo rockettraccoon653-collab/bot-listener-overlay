@@ -45,6 +45,21 @@ When the relay is running, the local guild site is available at:
 
 This page is read-only for now and shows the persistent profile, currency, XP, level, stats, classes, titles, inventory, equipped gear, shop catalog, and gold leaderboard.
 
+## Hosted Guild Hall Deployment
+
+The Guild Hall web entry point is the standalone site in `guild-site/`:
+
+- deploy folder: `guild-site`
+- entry file: `guild-site/index.html`
+- Vercel Root Directory: `guild-site`
+
+Keep the repo root deployment pointed at the overlay only if you still want the stream overlay hosted separately. The overlay root page remains `index.html` at the repo root and was not moved.
+
+For a standalone Guild Hall deployment, `guild-site/config.js` controls where the browser sends Guild Hall API requests:
+
+- leave `apiBaseUrl` empty when the site and `/api/guild/*` endpoints are served from the same origin
+- set `apiBaseUrl` to your relay or API host when the frontend is deployed separately, for example `https://your-api-host.example.com`
+
 ### 4. Watch transport status
 
 Both overlay and panel now show a transport badge:

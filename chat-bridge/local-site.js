@@ -37,6 +37,7 @@ const STATIC_ROUTES = Object.freeze({
   "/guild-shop": "index.html",
   "/guild-shop/": "index.html",
   "/guild-shop/app.js": "app.js",
+  "/guild-shop/config.js": "config.js",
   "/guild-shop/styles.css": "styles.css"
 });
 
