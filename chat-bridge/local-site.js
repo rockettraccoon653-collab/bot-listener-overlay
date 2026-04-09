@@ -1,7 +1,34 @@
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
-const { SHOP_CATALOG } = require("./shop-config");
+const {
+  SHOP_CATALOG,
+  CLASSES,
+  WEAPONS,
+  TITLES,
+  GEAR_WEAPONS,
+  ARMOR,
+  ACCESSORIES,
+  MONSTERS,
+  EFFECTS,
+  SOUNDS,
+  XP_BOOSTS,
+  PROGRESSION_PERKS,
+  findShopItem,
+  normalizeKey
+} = require("./shop-config");
+const {
+  STAT_RULES,
+  CLASS_RULES,
+  EQUIPMENT_SLOT_RULES,
+  getTitleRule,
+  getEffectiveShopCost
+} = require("./player-rules");
+const { PROGRESSION_RULES, getXpRequiredForLevel } = require("./player-progression");
+const { ShopHandler } = require("./shop-handler");
+const { verifyGuildHallAuthToken } = require("./guild-site-auth");
+
+const CREATION_ALLOWED_CLASSES = new Set(["warrior", "rogue", "mage", "cleric", "ranger"]);
 
 const repoRoot = path.resolve(__dirname, "..");
 const siteRoot = path.join(repoRoot, "guild-site");
@@ -25,49 +52,266 @@ function normalizePlayerName(input, fallback = "traveler") {
   return safe || fallback;
 }
 
-function mapShopItems(items) {
+function normalizeAuthToken(input) {
+  return String(input || "").trim();
+}
+
+function resolveGuildAccessContext({ requestUrl, payload, defaultPlayer }) {
+  const requestedPlayer = normalizePlayerName(payload?.player || requestUrl.searchParams.get("player"), defaultPlayer);
+  const authToken = normalizeAuthToken(payload?.authToken || requestUrl.searchParams.get("auth"));
+
+  return {
+    player: requestedPlayer,
+    authToken,
+    canEdit: verifyGuildHallAuthToken(requestedPlayer, authToken)
+  };
+}
+
+function getUnlockedValues(viewer, collection) {
+  if (collection === "classes") {
+    return Array.isArray(viewer?.classData?.unlockedClasses) ? viewer.classData.unlockedClasses.map((entry) => normalizeKey(entry)) : [];
+  }
+
+  if (collection === "titles") {
+    return Array.isArray(viewer?.titleData?.unlockedTitles) ? viewer.titleData.unlockedTitles.map((entry) => normalizeKey(entry)) : [];
+  }
+
+  if (collection === "weapons") {
+    return Array.isArray(viewer?.permanentUnlocks?.weapons) ? viewer.permanentUnlocks.weapons.map((entry) => normalizeKey(entry)) : [];
+  }
+
+  if (collection === "perks") {
+    return Array.isArray(viewer?.permanentUnlocks?.perks) ? viewer.permanentUnlocks.perks.map((entry) => normalizeKey(entry)) : [];
+  }
+
+  return [];
+}
+
+function isItemOwnedByViewer(viewer, item) {
+  if (!viewer || !item) {
+    return false;
+  }
+
+  if (item.itemType === "gear") {
+    return (Array.isArray(viewer.inventory) ? viewer.inventory : [])
+      .some((entry) => normalizeKey(entry.itemId || entry.id || entry.key || entry.name || "") === normalizeKey(item.id || item.key));
+  }
+
+  if (item.unlockCollection) {
+    return getUnlockedValues(viewer, item.unlockCollection).includes(normalizeKey(item.key || item.id));
+  }
+
+  return false;
+}
+
+function isItemEquippedByViewer(viewer, item) {
+  if (!viewer || !item) {
+    return false;
+  }
+
+  if (item.itemType === "gear") {
+    const slot = normalizeKey(item.category || item.gearCategory || "");
+    return normalizeKey(viewer?.equipment?.[slot] || "") === normalizeKey(item.id || item.key);
+  }
+
+  if (CLASSES[item.key]) {
+    return normalizeKey(viewer?.classData?.activeClassPrimary || viewer?.className || "peasant") === normalizeKey(item.key);
+  }
+
+  if (WEAPONS[item.key]) {
+    return normalizeKey(viewer?.weapon || "") === normalizeKey(item.key);
+  }
+
+  if (TITLES[item.key]) {
+    return normalizeKey(viewer?.title || viewer?.titleData?.activeTitle || "") === normalizeKey(item.name || item.key);
+  }
+
+  return false;
+}
+
+function buildItemActionState(viewer, item) {
+  const owned = isItemOwnedByViewer(viewer, item);
+  const active = isItemEquippedByViewer(viewer, item);
+  const pricing = getEffectiveShopCost({ viewer, item, baseCost: item.cost || 0 });
+
+  return {
+    owned,
+    active,
+    finalCost: Number(pricing.finalCost || item.cost || 0),
+    canAfford: Number(viewer?.gold || viewer?.currency?.gold || 0) >= Number(pricing.finalCost || item.cost || 0),
+    actionState: item.itemType === "gear"
+      ? active ? "equipped" : owned ? "owned" : "buy"
+      : active ? "active" : owned ? "owned" : "buy"
+  };
+}
+
+function mapShopItems(items, viewer) {
   return Object.values(items || {})
-    .map((item) => ({
-      id: item.id || item.key || "",
-      key: item.key || item.id || "",
-      name: item.name || item.key || "Unknown",
-      cost: Number(item.cost || 0),
-      itemType: item.itemType || item.type || "item",
-      category: item.category || item.gearCategory || item.shopGroup || "misc",
-      rarity: item.rarity || "standard",
-      purchaseScope: item.purchaseScope || "persistent",
-      duplicatePolicy: item.duplicatePolicy || "owned-once",
-      passiveText: item.passiveText || "",
-      description: item.description || "",
-      titleType: item.titleType || "",
-      equipable: Boolean(item.equipable),
-      permanent: item.permanent !== false,
-      statBonuses: item.statBonuses || {},
-      effects: item.effects || {}
-    }))
+    .map((item) => {
+      const baseItem = {
+        id: item.id || item.key || "",
+        key: item.key || item.id || "",
+        name: item.name || item.key || "Unknown",
+        cost: Number(item.cost || 0),
+        itemType: item.itemType || item.type || "item",
+        category: item.category || item.gearCategory || item.shopGroup || "misc",
+        rarity: item.rarity || "standard",
+        purchaseScope: item.purchaseScope || "persistent",
+        duplicatePolicy: item.duplicatePolicy || "owned-once",
+        passiveText: item.passiveText || "",
+        description: item.description || "",
+        titleType: item.titleType || "",
+        equipable: Boolean(item.equipable),
+        permanent: item.permanent !== false,
+        statBonuses: item.statBonuses || {},
+        effects: item.effects || {},
+        unlockCollection: item.unlockCollection || ""
+      };
+
+      return {
+        ...baseItem,
+        ...buildItemActionState(viewer, item)
+      };
+    })
     .sort((left, right) => left.cost - right.cost || left.name.localeCompare(right.name));
 }
 
-function buildCatalogPayload() {
+function buildCatalogPayload(viewer) {
   return {
     permanentUnlocks: {
-      classes: mapShopItems(SHOP_CATALOG.permanentUnlocks?.classes),
-      weapons: mapShopItems(SHOP_CATALOG.permanentUnlocks?.weapons),
-      titles: mapShopItems(SHOP_CATALOG.permanentUnlocks?.titles)
+      classes: mapShopItems(SHOP_CATALOG.permanentUnlocks?.classes, viewer),
+      weapons: mapShopItems(SHOP_CATALOG.permanentUnlocks?.weapons, viewer),
+      titles: mapShopItems(SHOP_CATALOG.permanentUnlocks?.titles, viewer)
     },
     gear: {
-      weapons: mapShopItems(SHOP_CATALOG.gear?.weapons),
-      armor: mapShopItems(SHOP_CATALOG.gear?.armor),
-      accessories: mapShopItems(SHOP_CATALOG.gear?.accessories)
+      weapons: mapShopItems(SHOP_CATALOG.gear?.weapons, viewer),
+      armor: mapShopItems(SHOP_CATALOG.gear?.armor, viewer),
+      accessories: mapShopItems(SHOP_CATALOG.gear?.accessories, viewer)
     },
     temporarySessionBoosts: {
-      xpBoosts: mapShopItems(SHOP_CATALOG.temporarySessionBoosts?.xpBoosts)
+      xpBoosts: mapShopItems(SHOP_CATALOG.temporarySessionBoosts?.xpBoosts, viewer)
     },
     consumables: {
-      summons: mapShopItems(SHOP_CATALOG.consumables?.summons),
-      effects: mapShopItems(SHOP_CATALOG.consumables?.effects),
-      sounds: mapShopItems(SHOP_CATALOG.consumables?.sounds)
+      summons: mapShopItems(SHOP_CATALOG.consumables?.summons, viewer),
+      effects: mapShopItems(SHOP_CATALOG.consumables?.effects, viewer),
+      sounds: mapShopItems(SHOP_CATALOG.consumables?.sounds, viewer)
     }
+  };
+}
+
+function buildEquipmentCatalog(viewer) {
+  return {
+    weapon: mapShopItems(GEAR_WEAPONS, viewer),
+    armor: mapShopItems(ARMOR, viewer),
+    accessory: mapShopItems(ACCESSORIES, viewer)
+  };
+}
+
+function buildClassReference() {
+  return Object.values(CLASS_RULES)
+    .map((classRule) => ({
+      key: classRule.key,
+      name: classRule.name,
+      role: classRule.role,
+      fantasy: classRule.fantasy,
+      coreStat: classRule.coreStat,
+      passiveLabel: classRule.passiveLabel,
+      passiveText: classRule.passiveText,
+      combatImpactNow: classRule.combatImpactNow,
+      rewardImpactNow: classRule.rewardImpactNow,
+      shopImpactNow: classRule.shopImpactNow,
+      bonuses: classRule.bonuses,
+      creationEligible: CREATION_ALLOWED_CLASSES.has(classRule.key)
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function buildStatReference() {
+  return Object.entries(STAT_RULES).map(([key, rule]) => ({
+    key,
+    label: rule.label,
+    meaning: rule.meaning,
+    affectsNow: rule.affectsNow || [],
+    futureHooks: rule.futureHooks || []
+  }));
+}
+
+function buildTitleReference() {
+  return Object.values(TITLES)
+    .map((title) => {
+      const titleRule = getTitleRule(title.key);
+      return {
+        key: title.key,
+        name: title.name,
+        type: title.titleType || titleRule?.type || "cosmetic",
+        passiveText: title.passiveText || titleRule?.passiveText || "Cosmetic only for now.",
+        description: title.description || ""
+      };
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function buildHelpPayload() {
+  return {
+    stats: buildStatReference(),
+    classes: buildClassReference(),
+    systems: [
+      {
+        key: "gold",
+        title: "Gold",
+        body: "Gold is earned from chat activity, boss rewards, and some class or title bonuses. Spend it on classes, titles, weapons, gear, boosts, and summons."
+      },
+      {
+        key: "xp",
+        title: "XP and Levels",
+        body: `Combat and boss rewards grant XP. Level pacing starts at ${PROGRESSION_RULES.levelBaseXp} XP and increases by ${PROGRESSION_RULES.levelStepXp} XP per level.`,
+        details: {
+          levelTwoThreshold: getXpRequiredForLevel(1),
+          levelThreeThreshold: getXpRequiredForLevel(2)
+        }
+      },
+      {
+        key: "gear",
+        title: "Gear",
+        body: "Owned gear stays in your persistent inventory. Weapons, armor, and accessories can each occupy one equipment slot, and equipped bonuses feed into combat, rewards, or shop discounts."
+      },
+      {
+        key: "shop",
+        title: "Shop and Equipment",
+        body: "The Guild Hall now supports site-based buying plus gear equip and unequip actions. Chat commands still use the same persistence layer, so either surface stays in sync."
+      },
+      {
+        key: "boss",
+        title: "Boss Fights",
+        body: "Bosses are community encounters. Players attack through chat commands, deal persistent damage totals, and share gold and XP rewards when the boss falls."
+      }
+    ],
+    commands: [
+      "!shop",
+      "!gold",
+      "!class",
+      "!class list",
+      "!class choose primary [class]",
+      "!class choose secondary [class]",
+      "!class clear secondary",
+      "!title",
+      "!titles",
+      "!title equip [title]",
+      "!inventory",
+      "!gear",
+      "!equip [item]",
+      "!unequip [slot]",
+      "!buy [item]",
+      "!attack",
+      "!spell",
+      "!smite"
+    ],
+    equipmentSlots: Object.entries(EQUIPMENT_SLOT_RULES).map(([key, rule]) => ({
+      key,
+      label: rule.label,
+      affectsNow: rule.affectsNow || [],
+      futureHooks: rule.futureHooks || []
+    }))
   };
 }
 
@@ -86,8 +330,41 @@ function buildProfilePayload(viewer) {
     titleData: viewer.titleData,
     inventory: Array.isArray(viewer.inventory) ? viewer.inventory : [],
     equipment: viewer.equipment,
+    equipmentItems: viewer.equipmentItems || { weapon: null, armor: null, accessory: null },
     ownedUnlocks: viewer.ownedUnlocks,
-    combat: viewer.combat
+    combat: viewer.combat,
+    characterProfileComplete: Boolean(viewer.characterProfileComplete),
+    characterCreatedAt: Number(viewer.characterCreatedAt || 0)
+  };
+}
+
+function buildActionFingerprint(viewer, bossEngine) {
+  const bossState = bossEngine.getState();
+  return JSON.stringify({
+    gold: Number(viewer?.gold || viewer?.currency?.gold || 0),
+    className: normalizeKey(viewer?.className || viewer?.classData?.activeClassPrimary || ""),
+    weapon: normalizeKey(viewer?.weapon || ""),
+    title: normalizeKey(viewer?.title || viewer?.titleData?.activeTitle || ""),
+    inventory: Array.isArray(viewer?.inventory) ? viewer.inventory.map((entry) => ({
+      itemId: normalizeKey(entry.itemId || entry.id || entry.key || ""),
+      quantity: Number(entry.quantity || 1)
+    })) : [],
+    equipment: viewer?.equipment || {},
+    equipmentItems: Object.fromEntries(Object.entries(viewer?.equipmentItems || {}).map(([slot, item]) => [slot, item ? normalizeKey(item.itemId || item.id || item.key || "") : ""])),
+    boss: {
+      active: Boolean(bossState.active),
+      key: String(bossState.bossKey || ""),
+      hp: Number(bossState.hp || 0)
+    }
+  });
+}
+
+function buildActionResponse({ ok, message, player, canEdit, viewerDb, bossEngine, getShopUrl, getPublicShopUrl }) {
+  const viewer = viewerDb.getViewer(player);
+  return {
+    ok,
+    message,
+    dashboard: buildDashboardPayload({ player, viewer, viewerDb, bossEngine, getShopUrl, getPublicShopUrl, canEdit })
   };
 }
 
@@ -114,58 +391,370 @@ function sendFile(response, filePath) {
   }
 }
 
+function readRequestBody(request) {
+  return new Promise((resolve, reject) => {
+    let raw = "";
+    request.on("data", (chunk) => {
+      raw += chunk;
+      if (raw.length > 1024 * 128) {
+        reject(new Error("Request body too large"));
+        request.destroy();
+      }
+    });
+    request.on("end", () => {
+      if (!raw.trim()) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(raw));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    request.on("error", reject);
+  });
+}
+
+function buildDashboardPayload({ player, viewer, viewerDb, bossEngine, getShopUrl, getPublicShopUrl, canEdit = false }) {
+  const leaderboard = viewerDb.getTopGold(8).map((entry) => ({
+    username: entry.username,
+    gold: Number(entry.gold || 0),
+    title: viewerDb.getViewer(entry.username)?.title || ""
+  }));
+  const bossState = bossEngine.getState();
+
+  return {
+    runtime: {
+      localOnly: true,
+      readOnly: !canEdit,
+      canEdit,
+      player,
+      generatedAt: Date.now(),
+      entryUrl: canEdit ? getShopUrl(player) : getPublicShopUrl(player),
+      sections: ["character-creation", "profile", "stats", "classes", "inventory", "equipment", "shop", "help"],
+      interactiveScopes: canEdit ? ["character-creation", "site-shop-buy", "site-equip", "site-unequip"] : [],
+      scaffoldedScopes: ["site-class-management", "site-title-management"],
+      profileAccessLocked: !viewer?.characterProfileComplete
+    },
+    onboarding: {
+      required: !viewer?.characterProfileComplete,
+      rules: viewerDb.CHARACTER_CREATION_RULES,
+      starterClasses: buildClassReference().filter((entry) => entry.creationEligible)
+    },
+    profile: buildProfilePayload(viewer),
+    leaderboard,
+    boss: bossState.active ? {
+      active: true,
+      key: bossState.bossKey,
+      name: bossState.bossName,
+      hp: bossState.hp,
+      maxHp: bossState.maxHp,
+      tier: bossState.tier,
+      summonedBy: bossState.summonedBy,
+      nextSpawnAt: Number(bossState.nextSpawnAt || 0),
+      cooldownMs: Number(bossState.cooldownMs || 0)
+    } : {
+      active: false,
+      nextSpawnAt: Number(bossState.nextSpawnAt || 0),
+      cooldownMs: Number(bossState.cooldownMs || 0)
+    },
+    shop: buildCatalogPayload(viewer),
+    equipmentCatalog: buildEquipmentCatalog(viewer),
+    help: buildHelpPayload()
+  };
+}
+
 function createLocalGuildSite(options) {
   const host = String(options.host || "127.0.0.1");
   const port = Number(options.port || 8788);
   const viewerDb = options.viewerDb;
   const bossEngine = options.bossEngine;
   const getShopUrl = options.getShopUrl;
+  const getPublicShopUrl = options.getPublicShopUrl || ((player) => getShopUrl(player));
+  const broadcast = typeof options.broadcast === "function" ? options.broadcast : () => {};
   const defaultPlayer = normalizePlayerName(options.defaultPlayer || "traveler", "traveler");
+  const shopHandler = new ShopHandler({
+    viewerDb,
+    bossEngine,
+    broadcast,
+    announce: () => {},
+    getShopUrl
+  });
 
-  const server = http.createServer((request, response) => {
+  const server = http.createServer(async (request, response) => {
     const requestUrl = new URL(request.url || "/", `http://${host}:${port}`);
 
-    if (request.method !== "GET") {
-      sendJson(response, 405, { error: "Method not allowed" });
+    if (request.method === "GET" && requestUrl.pathname === "/api/guild/dashboard") {
+      const access = resolveGuildAccessContext({ requestUrl, defaultPlayer });
+      const player = access.player;
+      const viewer = viewerDb.getViewer(player);
+      sendJson(response, 200, buildDashboardPayload({
+        player,
+        viewer,
+        viewerDb,
+        bossEngine,
+        getShopUrl,
+        getPublicShopUrl,
+        canEdit: access.canEdit
+      }));
       return;
     }
 
-    if (requestUrl.pathname === "/api/guild/dashboard") {
-      const player = normalizePlayerName(requestUrl.searchParams.get("player"), defaultPlayer);
-      const viewer = viewerDb.getViewer(player);
-      const leaderboard = viewerDb.getTopGold(8).map((entry) => ({
-        username: entry.username,
-        gold: Number(entry.gold || 0),
-        title: viewerDb.getViewer(entry.username)?.title || ""
-      }));
-      const bossState = bossEngine.getState();
+    if (request.method === "POST" && requestUrl.pathname === "/api/guild/character/create") {
+      try {
+        const payload = await readRequestBody(request);
+        const access = resolveGuildAccessContext({ requestUrl, payload, defaultPlayer });
+        const player = access.player;
+        if (!access.canEdit) {
+          sendJson(response, 403, buildActionResponse({
+            ok: false,
+            message: "You can only edit your own Guild Hall profile.",
+            player,
+            canEdit: access.canEdit,
+            viewerDb,
+            bossEngine,
+            getShopUrl,
+            getPublicShopUrl
+          }));
+          return;
+        }
+        const classKey = String(payload.classKey || "").trim().toLowerCase();
+        const classRule = CLASS_RULES[classKey];
+        if (!classRule || classKey === "peasant") {
+          sendJson(response, 400, {
+            ok: false,
+            errors: ["Choose a valid starting class."]
+          });
+          return;
+        }
 
-      sendJson(response, 200, {
-        runtime: {
-          readOnly: true,
-          localOnly: true,
+        const result = viewerDb.initializeCharacterProfile(player, {
+          classKey,
+          stats: payload.stats
+        });
+
+        if (!result.ok) {
+          sendJson(response, 400, result);
+          return;
+        }
+
+        sendJson(response, 200, {
+          ok: true,
+          profile: buildProfilePayload(result.viewer),
+          onboarding: {
+            required: false,
+            rules: viewerDb.CHARACTER_CREATION_RULES
+          },
+          entryUrl: getShopUrl(player)
+        });
+        return;
+      } catch (error) {
+        sendJson(response, 400, {
+          ok: false,
+          errors: [error.message || "Unable to create character."]
+        });
+        return;
+      }
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/api/guild/shop/buy") {
+      try {
+        const payload = await readRequestBody(request);
+        const access = resolveGuildAccessContext({ requestUrl, payload, defaultPlayer });
+        const player = access.player;
+        if (!access.canEdit) {
+          sendJson(response, 403, buildActionResponse({
+            ok: false,
+            message: "You can only edit your own Guild Hall profile.",
+            player,
+            canEdit: access.canEdit,
+            viewerDb,
+            bossEngine,
+            getShopUrl,
+            getPublicShopUrl
+          }));
+          return;
+        }
+        const viewer = viewerDb.getViewer(player);
+        if (!viewer?.characterProfileComplete) {
+          sendJson(response, 403, buildActionResponse({
+            ok: false,
+            message: "Finish character creation before using the shop.",
+            player,
+            canEdit: access.canEdit,
+            viewerDb,
+            bossEngine,
+            getShopUrl,
+            getPublicShopUrl
+          }));
+          return;
+        }
+        const itemKey = String(payload.itemKey || "").trim();
+        const knownItem = findShopItem(itemKey);
+        if (!knownItem) {
+          sendJson(response, 400, buildActionResponse({
+            ok: false,
+            message: "That item is not in the guild catalog.",
+            player,
+            canEdit: access.canEdit,
+            viewerDb,
+            bossEngine,
+            getShopUrl,
+            getPublicShopUrl
+          }));
+          return;
+        }
+
+        const beforeViewer = viewerDb.getViewer(player);
+        const beforeFingerprint = buildActionFingerprint(beforeViewer, bossEngine);
+        const action = shopHandler.buyItem(player, itemKey);
+        const afterViewer = viewerDb.getViewer(player);
+        const afterFingerprint = buildActionFingerprint(afterViewer, bossEngine);
+        const ok = beforeFingerprint !== afterFingerprint;
+
+        sendJson(response, ok ? 200 : 400, buildActionResponse({
+          ok,
+          message: action.reply || `${player} could not buy ${knownItem.name}.`,
           player,
-          generatedAt: Date.now(),
-          entryUrl: getShopUrl(player),
-          views: ["profile", "inventory", "classes", "titles", "shop", "leaderboard"]
-        },
-        profile: buildProfilePayload(viewer),
-        leaderboard,
-        boss: bossState.active ? {
-          active: true,
-          key: bossState.bossKey,
-          name: bossState.bossName,
-          hp: bossState.hp,
-          maxHp: bossState.maxHp,
-          tier: bossState.tier,
-          summonedBy: bossState.summonedBy,
-          nextSpawnAt: Number(bossState.nextSpawnAt || 0)
-        } : {
-          active: false,
-          nextSpawnAt: Number(bossState.nextSpawnAt || 0)
-        },
-        shop: buildCatalogPayload()
-      });
+          canEdit: access.canEdit,
+          viewerDb,
+          bossEngine,
+          getShopUrl,
+          getPublicShopUrl
+        }));
+        return;
+      } catch (error) {
+        sendJson(response, 400, {
+          ok: false,
+          message: error.message || "Unable to buy item."
+        });
+        return;
+      }
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/api/guild/equipment/equip") {
+      try {
+        const payload = await readRequestBody(request);
+        const access = resolveGuildAccessContext({ requestUrl, payload, defaultPlayer });
+        const player = access.player;
+        if (!access.canEdit) {
+          sendJson(response, 403, buildActionResponse({
+            ok: false,
+            message: "You can only edit your own Guild Hall profile.",
+            player,
+            canEdit: access.canEdit,
+            viewerDb,
+            bossEngine,
+            getShopUrl,
+            getPublicShopUrl
+          }));
+          return;
+        }
+        const viewer = viewerDb.getViewer(player);
+        if (!viewer?.characterProfileComplete) {
+          sendJson(response, 403, buildActionResponse({
+            ok: false,
+            message: "Finish character creation before equipping gear.",
+            player,
+            canEdit: access.canEdit,
+            viewerDb,
+            bossEngine,
+            getShopUrl,
+            getPublicShopUrl
+          }));
+          return;
+        }
+        const itemKey = String(payload.itemKey || "").trim();
+        const beforeViewer = viewerDb.getViewer(player);
+        const beforeFingerprint = buildActionFingerprint(beforeViewer, bossEngine);
+        const action = shopHandler.equipInventoryItem(player, itemKey);
+        const afterViewer = viewerDb.getViewer(player);
+        const afterFingerprint = buildActionFingerprint(afterViewer, bossEngine);
+        const ok = beforeFingerprint !== afterFingerprint;
+
+        sendJson(response, ok ? 200 : 400, buildActionResponse({
+          ok,
+          message: action.reply || `${player} could not equip that item.`,
+          player,
+          canEdit: access.canEdit,
+          viewerDb,
+          bossEngine,
+          getShopUrl,
+          getPublicShopUrl
+        }));
+        return;
+      } catch (error) {
+        sendJson(response, 400, {
+          ok: false,
+          message: error.message || "Unable to equip item."
+        });
+        return;
+      }
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/api/guild/equipment/unequip") {
+      try {
+        const payload = await readRequestBody(request);
+        const access = resolveGuildAccessContext({ requestUrl, payload, defaultPlayer });
+        const player = access.player;
+        if (!access.canEdit) {
+          sendJson(response, 403, buildActionResponse({
+            ok: false,
+            message: "You can only edit your own Guild Hall profile.",
+            player,
+            canEdit: access.canEdit,
+            viewerDb,
+            bossEngine,
+            getShopUrl,
+            getPublicShopUrl
+          }));
+          return;
+        }
+        const viewer = viewerDb.getViewer(player);
+        if (!viewer?.characterProfileComplete) {
+          sendJson(response, 403, buildActionResponse({
+            ok: false,
+            message: "Finish character creation before changing equipment.",
+            player,
+            canEdit: access.canEdit,
+            viewerDb,
+            bossEngine,
+            getShopUrl,
+            getPublicShopUrl
+          }));
+          return;
+        }
+        const slot = String(payload.slot || "").trim();
+        const beforeViewer = viewerDb.getViewer(player);
+        const beforeFingerprint = buildActionFingerprint(beforeViewer, bossEngine);
+        const action = shopHandler.unequipSlot(player, slot);
+        const afterViewer = viewerDb.getViewer(player);
+        const afterFingerprint = buildActionFingerprint(afterViewer, bossEngine);
+        const ok = beforeFingerprint !== afterFingerprint;
+
+        sendJson(response, ok ? 200 : 400, buildActionResponse({
+          ok,
+          message: action.reply || `${player} could not unequip that slot.`,
+          player,
+          canEdit: access.canEdit,
+          viewerDb,
+          bossEngine,
+          getShopUrl,
+          getPublicShopUrl
+        }));
+        return;
+      } catch (error) {
+        sendJson(response, 400, {
+          ok: false,
+          message: error.message || "Unable to unequip item."
+        });
+        return;
+      }
+    }
+
+    if (request.method !== "GET") {
+      sendJson(response, 405, { error: "Method not allowed" });
       return;
     }
 

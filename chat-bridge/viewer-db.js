@@ -1,10 +1,58 @@
 const fs = require("fs");
 const path = require("path");
 const { calculateProgression } = require("./player-progression");
+const { GEAR_WEAPONS, ARMOR, ACCESSORIES, normalizeKey: normalizeCatalogKey } = require("./shop-config");
 
 const DATA_DIR = path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "viewers.json");
 const PROFILE_VERSION = 2;
+const EQUIPMENT_SLOTS = Object.freeze(["weapon", "armor", "accessory"]);
+const CHARACTER_CREATION_RULES = Object.freeze({
+  statOrder: ["strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"],
+  baseStat: 8,
+  minimumStat: 8,
+  maximumStartingStat: 16,
+  assignablePoints: 12,
+  allowedClasses: ["warrior", "rogue", "mage", "cleric", "ranger"]
+});
+
+const STARTER_LOADOUTS = Object.freeze({
+  warrior: {
+    inventory: [
+      { itemId: "basic-sword", name: "Basic Sword", category: "weapon", rarity: "common", equipable: true, statBonuses: { physicalFlat: 1 } },
+      { itemId: "leather-armor", name: "Leather Armor", category: "armor", rarity: "common", equipable: true, statBonuses: { constitutionGuard: 1 }, effects: { future: "light-defense" } }
+    ],
+    equipment: { weapon: "basic-sword", armor: "leather-armor", accessory: "" }
+  },
+  rogue: {
+    inventory: [
+      { itemId: "rogue-dagger", name: "Rogue Dagger", category: "weapon", rarity: "uncommon", equipable: true, statBonuses: { physicalFlat: 1, critChance: 0.02 } },
+      { itemId: "lucky-charm", name: "Lucky Charm", category: "accessory", rarity: "common", equipable: true, statBonuses: { critChance: 0.01 }, effects: { future: "lucky-rolls" } }
+    ],
+    equipment: { weapon: "rogue-dagger", armor: "", accessory: "lucky-charm" }
+  },
+  mage: {
+    inventory: [
+      { itemId: "mage-focus", name: "Mage Focus", category: "weapon", rarity: "uncommon", equipable: true, statBonuses: { spellFlat: 1 } },
+      { itemId: "wisdom-pendant", name: "Wisdom Pendant", category: "accessory", rarity: "uncommon", equipable: true, statBonuses: { xpMultiplier: 0.05 }, effects: { future: "reward-scaling" } }
+    ],
+    equipment: { weapon: "mage-focus", armor: "", accessory: "wisdom-pendant" }
+  },
+  cleric: {
+    inventory: [
+      { itemId: "mage-focus", name: "Mage Focus", category: "weapon", rarity: "uncommon", equipable: true, statBonuses: { spellFlat: 1 } },
+      { itemId: "leather-armor", name: "Leather Armor", category: "armor", rarity: "common", equipable: true, statBonuses: { constitutionGuard: 1 }, effects: { future: "light-defense" } }
+    ],
+    equipment: { weapon: "mage-focus", armor: "leather-armor", accessory: "" }
+  },
+  ranger: {
+    inventory: [
+      { itemId: "rogue-dagger", name: "Rogue Dagger", category: "weapon", rarity: "uncommon", equipable: true, statBonuses: { physicalFlat: 1, critChance: 0.02 } },
+      { itemId: "leather-armor", name: "Leather Armor", category: "armor", rarity: "common", equipable: true, statBonuses: { constitutionGuard: 1 }, effects: { future: "light-defense" } }
+    ],
+    equipment: { weapon: "rogue-dagger", armor: "leather-armor", accessory: "" }
+  }
+});
 
 const DEFAULT_PLAYER_STATS = Object.freeze({
   strength: 10,
@@ -159,6 +207,72 @@ function normalizeInventoryEntry(entry) {
   };
 }
 
+function getCatalogGearItem(itemId, slot = "") {
+  const safeItemId = normalizeCatalogKey(itemId);
+  const safeSlot = normalizeKey(slot);
+  if (!safeItemId) {
+    return null;
+  }
+
+  const catalogItem = GEAR_WEAPONS[safeItemId] || ARMOR[safeItemId] || ACCESSORIES[safeItemId] || null;
+  if (catalogItem) {
+    return normalizeInventoryEntry(catalogItem);
+  }
+
+  if (!EQUIPMENT_SLOTS.includes(safeSlot)) {
+    return null;
+  }
+
+  return normalizeInventoryEntry({
+    itemId: safeItemId,
+    name: safeItemId,
+    category: safeSlot,
+    rarity: "legacy",
+    quantity: 1,
+    permanent: true,
+    equipable: true,
+    statBonuses: {},
+    effects: {},
+    acquiredAt: 0
+  });
+}
+
+function createEmptyEquipmentItems() {
+  return {
+    weapon: null,
+    armor: null,
+    accessory: null
+  };
+}
+
+function normalizeEquipmentItems(record, inventory, equipment) {
+  const normalized = createEmptyEquipmentItems();
+  const source = record && typeof record === "object" ? record : {};
+
+  for (const slot of EQUIPMENT_SLOTS) {
+    const equippedItemId = normalizeKey(equipment?.[slot] || "");
+    if (!equippedItemId) {
+      continue;
+    }
+
+    const explicitItem = normalizeInventoryEntry(readFirstDefined(source, [["equipmentItems", slot], ["equipment", "items", slot]], null));
+    if (explicitItem && explicitItem.itemId === equippedItemId && explicitItem.category === slot) {
+      normalized[slot] = explicitItem;
+      continue;
+    }
+
+    const inventoryIndex = inventory.findIndex((entry) => entry.itemId === equippedItemId && entry.category === slot);
+    if (inventoryIndex >= 0) {
+      normalized[slot] = inventory.splice(inventoryIndex, 1)[0];
+      continue;
+    }
+
+    normalized[slot] = getCatalogGearItem(equippedItemId, slot);
+  }
+
+  return normalized;
+}
+
 function createDefaultStoredViewer(username) {
   const key = keyFor(username);
   return {
@@ -191,6 +305,11 @@ function createDefaultStoredViewer(username) {
       armor: "",
       accessory: ""
     },
+    equipmentItems: {
+      weapon: null,
+      armor: null,
+      accessory: null
+    },
     permanentUnlocks: {
       weapons: [],
       perks: [],
@@ -201,8 +320,120 @@ function createDefaultStoredViewer(username) {
     },
     meta: {
       lastChatAt: 0,
-      updatedAt: 0
+      updatedAt: 0,
+      characterProfileComplete: false,
+      characterCreatedAt: 0
     }
+  };
+}
+
+function inferCharacterProfileComplete(record) {
+  const explicit = readFirstDefined(record, [["meta", "characterProfileComplete"], ["characterProfileComplete"]], null);
+  if (typeof explicit === "boolean") {
+    return explicit;
+  }
+
+  if (!record || typeof record !== "object" || !Object.keys(record).length) {
+    return false;
+  }
+
+  const stats = normalizeStats(record);
+  const hasNonDefaultStats = Object.entries(DEFAULT_PLAYER_STATS)
+    .some(([statKey, defaultValue]) => Number(stats[statKey] || 0) !== Number(defaultValue));
+  const activeClass = normalizeKey(readFirstDefined(record, [["className"], ["classData", "activeClassPrimary"], ["classData", "activeClass"]], "peasant"), "peasant") || "peasant";
+  const activeTitle = normalizeString(readFirstDefined(record, [["title"], ["titleData", "activeTitle"]], ""), "").trim();
+  const activeWeapon = normalizeKey(readFirstDefined(record, [["weapon"], ["equipment", "weapon"]], ""), "");
+  const totalXp = normalizeCount(readFirstDefined(record, [["totalXp"], ["progression", "totalXp"]], 0), 0);
+  const totalDamage = normalizeCount(readFirstDefined(record, [["totalDamage"], ["combat", "totalDamage"]], 0), 0);
+  const unlockedClasses = normalizeUnlockCollection(readFirstDefined(record, [["classData", "unlockedClasses"], ["ownedUnlocks", "classes"]], []), []);
+  const unlockedWeapons = normalizeUnlockCollection(readFirstDefined(record, [["permanentUnlocks", "weapons"], ["ownedUnlocks", "weapons"]], []), []);
+  const unlockedTitles = normalizeUnlockCollection(readFirstDefined(record, [["titleData", "unlockedTitles"], ["ownedUnlocks", "titles"]], []), []);
+  const inventory = normalizeInventory(readFirstDefined(record, [["inventory"]], []));
+
+  return Boolean(
+    totalXp > 0
+    || totalDamage > 0
+    || activeClass !== "peasant"
+    || activeTitle
+    || activeWeapon
+    || unlockedClasses.some((entry) => entry !== "peasant")
+    || unlockedWeapons.length
+    || unlockedTitles.length
+    || inventory.length
+    || hasNonDefaultStats
+  );
+}
+
+function normalizeCreationStats(stats) {
+  const source = stats && typeof stats === "object" ? stats : {};
+  const normalized = {};
+
+  for (const statKey of CHARACTER_CREATION_RULES.statOrder) {
+    normalized[statKey] = normalizeCount(source[statKey], CHARACTER_CREATION_RULES.baseStat);
+  }
+
+  return normalized;
+}
+
+function getStarterLoadout(classKey) {
+  return STARTER_LOADOUTS[classKey] || {
+    inventory: [
+      { itemId: "basic-sword", name: "Basic Sword", category: "weapon", rarity: "common", equipable: true, statBonuses: { physicalFlat: 1 } }
+    ],
+    equipment: { weapon: "basic-sword", armor: "", accessory: "" }
+  };
+}
+
+function mergeStarterInventory(existingInventory, starterInventory) {
+  const inventory = normalizeInventory(existingInventory);
+
+  for (const starterItem of starterInventory) {
+    const normalizedStarter = normalizeInventoryEntry({
+      ...starterItem,
+      quantity: 1,
+      permanent: true,
+      acquiredAt: Date.now()
+    });
+    if (!normalizedStarter) {
+      continue;
+    }
+
+    const existingIndex = inventory.findIndex((entry) => entry.itemId === normalizedStarter.itemId);
+    if (existingIndex === -1) {
+      inventory.push(normalizedStarter);
+    }
+  }
+
+  return inventory;
+}
+
+function validateCreationStats(stats) {
+  const normalized = normalizeCreationStats(stats);
+  const errors = [];
+  let pointsSpent = 0;
+
+  for (const statKey of CHARACTER_CREATION_RULES.statOrder) {
+    const statValue = normalized[statKey];
+    if (statValue < CHARACTER_CREATION_RULES.minimumStat) {
+      errors.push(`${statKey} is below the minimum of ${CHARACTER_CREATION_RULES.minimumStat}.`);
+    }
+    if (statValue > CHARACTER_CREATION_RULES.maximumStartingStat) {
+      errors.push(`${statKey} is above the starting cap of ${CHARACTER_CREATION_RULES.maximumStartingStat}.`);
+    }
+    pointsSpent += Math.max(0, statValue - CHARACTER_CREATION_RULES.baseStat);
+  }
+
+  const pointsRemaining = CHARACTER_CREATION_RULES.assignablePoints - pointsSpent;
+  if (pointsRemaining < 0) {
+    errors.push(`Starting stats overspend the pool by ${Math.abs(pointsRemaining)} point${Math.abs(pointsRemaining) === 1 ? "" : "s"}.`);
+  }
+
+  return {
+    ok: errors.length === 0,
+    normalizedStats: normalized,
+    pointsSpent,
+    pointsRemaining,
+    errors
   };
 }
 
@@ -241,6 +472,13 @@ function toStoredViewerRecord(record, username) {
   const equippedWeapon = normalizeKey(readFirstDefined(record, [["weapon"], ["equipment", "weapon"]], defaults.equipment.weapon), defaults.equipment.weapon);
   const equippedArmor = normalizeKey(readFirstDefined(record, [["armor"], ["equipment", "armor"]], defaults.equipment.armor), defaults.equipment.armor);
   const equippedAccessory = normalizeKey(readFirstDefined(record, [["accessory"], ["equipment", "accessory"]], defaults.equipment.accessory), defaults.equipment.accessory);
+  const normalizedInventory = normalizeInventory(readFirstDefined(record, [["inventory"]], defaults.inventory));
+  const normalizedEquipment = {
+    weapon: equippedWeapon,
+    armor: equippedArmor,
+    accessory: equippedAccessory
+  };
+  const normalizedEquipmentItems = normalizeEquipmentItems(record, normalizedInventory, normalizedEquipment);
 
   return {
     profileVersion: PROFILE_VERSION,
@@ -272,12 +510,9 @@ function toStoredViewerRecord(record, username) {
         getLegacyTitleKey(record) ? [getLegacyTitleKey(record)] : []
       )
     },
-    inventory: normalizeInventory(readFirstDefined(record, [["inventory"]], defaults.inventory)),
-    equipment: {
-      weapon: equippedWeapon,
-      armor: equippedArmor,
-      accessory: equippedAccessory
-    },
+    inventory: normalizedInventory,
+    equipment: normalizedEquipment,
+    equipmentItems: normalizedEquipmentItems,
     permanentUnlocks: {
       weapons: normalizeUnlockCollection(
         readFirstDefined(record, [["permanentUnlocks", "weapons"], ["ownedUnlocks", "weapons"]], []),
@@ -291,7 +526,9 @@ function toStoredViewerRecord(record, username) {
     },
     meta: {
       lastChatAt: normalizeCount(readFirstDefined(record, [["lastChatAt"], ["meta", "lastChatAt"]], defaults.meta.lastChatAt), defaults.meta.lastChatAt),
-      updatedAt: normalizeCount(readFirstDefined(record, [["updatedAt"], ["meta", "updatedAt"]], Date.now()), Date.now())
+      updatedAt: normalizeCount(readFirstDefined(record, [["updatedAt"], ["meta", "updatedAt"]], Date.now()), Date.now()),
+      characterProfileComplete: inferCharacterProfileComplete(record),
+      characterCreatedAt: normalizeCount(readFirstDefined(record, [["meta", "characterCreatedAt"], ["characterCreatedAt"]], defaults.meta.characterCreatedAt), defaults.meta.characterCreatedAt)
     }
   };
 }
@@ -323,6 +560,7 @@ function materializeViewerRecord(storedRecord) {
     titleData: stored.titleData,
     inventory: stored.inventory,
     equipment: stored.equipment,
+    equipmentItems: stored.equipmentItems || createEmptyEquipmentItems(),
     permanentUnlocks: stored.permanentUnlocks,
     combat: stored.combat,
     meta: stored.meta,
@@ -339,7 +577,9 @@ function materializeViewerRecord(storedRecord) {
     ownedUnlocks,
     totalDamage: stored.combat.totalDamage,
     lastChatAt: stored.meta.lastChatAt,
-    updatedAt: stored.meta.updatedAt
+    updatedAt: stored.meta.updatedAt,
+    characterProfileComplete: Boolean(stored.meta.characterProfileComplete),
+    characterCreatedAt: Number(stored.meta.characterCreatedAt || 0)
   };
 }
 
@@ -468,6 +708,69 @@ function clearSecondaryClass(username) {
   });
 }
 
+function initializeCharacterProfile(username, options = {}) {
+  const classKey = normalizeKey(options.classKey, "");
+  const validation = validateCreationStats(options.stats);
+  const allowedClasses = new Set(CHARACTER_CREATION_RULES.allowedClasses);
+
+  if (!classKey) {
+    return {
+      ok: false,
+      errors: ["A starting class is required."],
+      validation
+    };
+  }
+
+  if (!allowedClasses.has(classKey)) {
+    return {
+      ok: false,
+      errors: ["Choose one of the valid starting classes: warrior, rogue, mage, cleric, or ranger."],
+      validation
+    };
+  }
+
+  if (!validation.ok) {
+    return {
+      ok: false,
+      errors: validation.errors,
+      validation
+    };
+  }
+
+  const createdAt = Date.now();
+  const starterLoadout = getStarterLoadout(classKey);
+  const viewer = upsertViewer(username, (currentViewer) => {
+    currentViewer.stats = { ...validation.normalizedStats };
+    currentViewer.className = classKey;
+    currentViewer.classData.activeClass = classKey;
+    currentViewer.classData.activeClassPrimary = classKey;
+    currentViewer.classData.activeClassSecondary = "";
+    currentViewer.classData.unlockedClasses = normalizeUnlockCollection(currentViewer.classData?.unlockedClasses, ["peasant", classKey]);
+    currentViewer.inventory = mergeStarterInventory(currentViewer.inventory, starterLoadout.inventory);
+    currentViewer.equipment = {
+      weapon: starterLoadout.equipment.weapon || currentViewer.equipment?.weapon || "",
+      armor: starterLoadout.equipment.armor || currentViewer.equipment?.armor || "",
+      accessory: starterLoadout.equipment.accessory || currentViewer.equipment?.accessory || ""
+    };
+    currentViewer.weapon = currentViewer.equipment.weapon;
+    currentViewer.armor = currentViewer.equipment.armor;
+    currentViewer.accessory = currentViewer.equipment.accessory;
+    currentViewer.meta.characterProfileComplete = true;
+    currentViewer.meta.characterCreatedAt = Number(currentViewer.meta.characterCreatedAt || createdAt);
+    currentViewer.permanentUnlocks.flags = {
+      ...normalizeFlagMap(currentViewer.permanentUnlocks?.flags),
+      "character-profile-complete": true
+    };
+    return currentViewer;
+  });
+
+  return {
+    ok: true,
+    viewer,
+    validation
+  };
+}
+
 function setWeapon(username, weapon) {
   return upsertViewer(username, (viewer) => {
     viewer.weapon = normalizeKey(weapon, "");
@@ -479,17 +782,37 @@ function setWeapon(username, weapon) {
 function setEquipmentSlot(username, slot, itemId) {
   const safeSlot = normalizeKey(slot);
   const safeItemId = normalizeKey(itemId);
-  if (!["weapon", "armor", "accessory"].includes(safeSlot)) {
+  if (!EQUIPMENT_SLOTS.includes(safeSlot)) {
     return getViewer(username);
   }
 
   return upsertViewer(username, (viewer) => {
-    const inventoryItem = normalizeInventory(viewer.inventory).find((entry) => entry.itemId === safeItemId && entry.category === safeSlot);
-    if (!inventoryItem) {
+    const inventory = normalizeInventory(viewer.inventory);
+    const nextIndex = inventory.findIndex((entry) => entry.itemId === safeItemId && entry.category === safeSlot);
+    const currentEquippedItem = normalizeInventoryEntry(viewer?.equipmentItems?.[safeSlot] || null);
+    const currentEquippedId = normalizeKey(viewer?.equipment?.[safeSlot] || "");
+
+    if (currentEquippedId === safeItemId && currentEquippedItem) {
+      viewer.inventory = inventory;
       return viewer;
     }
 
+    if (nextIndex < 0) {
+      return viewer;
+    }
+
+    const nextEquippedItem = inventory.splice(nextIndex, 1)[0];
+    if (!viewer.equipmentItems || typeof viewer.equipmentItems !== "object") {
+      viewer.equipmentItems = createEmptyEquipmentItems();
+    }
+
+    if (currentEquippedItem && currentEquippedId && !inventory.some((entry) => entry.itemId === currentEquippedItem.itemId && entry.category === currentEquippedItem.category)) {
+      inventory.push(currentEquippedItem);
+    }
+
     viewer.equipment[safeSlot] = safeItemId;
+    viewer.equipmentItems[safeSlot] = nextEquippedItem;
+    viewer.inventory = inventory;
     if (safeSlot === "weapon") {
       viewer.weapon = safeItemId;
     }
@@ -505,12 +828,25 @@ function setEquipmentSlot(username, slot, itemId) {
 
 function clearEquipmentSlot(username, slot) {
   const safeSlot = normalizeKey(slot);
-  if (!["weapon", "armor", "accessory"].includes(safeSlot)) {
+  if (!EQUIPMENT_SLOTS.includes(safeSlot)) {
     return getViewer(username);
   }
 
   return upsertViewer(username, (viewer) => {
+    const inventory = normalizeInventory(viewer.inventory);
+    const equippedItemId = normalizeKey(viewer?.equipment?.[safeSlot] || "");
+    const equippedItem = normalizeInventoryEntry(viewer?.equipmentItems?.[safeSlot] || null) || getCatalogGearItem(equippedItemId, safeSlot);
+
+    if (equippedItem && !inventory.some((entry) => entry.itemId === equippedItem.itemId && entry.category === equippedItem.category)) {
+      inventory.push(equippedItem);
+    }
+
     viewer.equipment[safeSlot] = "";
+    if (!viewer.equipmentItems || typeof viewer.equipmentItems !== "object") {
+      viewer.equipmentItems = createEmptyEquipmentItems();
+    }
+    viewer.equipmentItems[safeSlot] = null;
+    viewer.inventory = inventory;
     if (safeSlot === "weapon") {
       viewer.weapon = "";
     }
@@ -588,7 +924,19 @@ function getInventoryItem(viewer, itemId) {
     return null;
   }
 
-  return normalizeInventory(viewer.inventory).find((entry) => entry.itemId === safeItemId) || null;
+  const inventoryItem = normalizeInventory(viewer.inventory).find((entry) => entry.itemId === safeItemId) || null;
+  if (inventoryItem) {
+    return inventoryItem;
+  }
+
+  for (const slot of EQUIPMENT_SLOTS) {
+    const equippedItem = normalizeInventoryEntry(viewer?.equipmentItems?.[slot] || null);
+    if (equippedItem && equippedItem.itemId === safeItemId) {
+      return equippedItem;
+    }
+  }
+
+  return null;
 }
 
 function hasInventoryItem(username, itemId) {
@@ -765,6 +1113,7 @@ function getCombatReadiness(msWindow = 180000) {
 module.exports = {
   PROFILE_VERSION,
   DEFAULT_PLAYER_STATS,
+  CHARACTER_CREATION_RULES,
   getViewer,
   addGold,
   spendGold,
@@ -779,6 +1128,7 @@ module.exports = {
   addXp,
   hasInventoryItem,
   addInventoryItem,
+  initializeCharacterProfile,
   hasUnlock,
   grantUnlock,
   markChatActivity,

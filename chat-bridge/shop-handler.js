@@ -622,6 +622,11 @@ class ShopHandler {
       return null;
     }
 
+    const equippedItem = viewer?.equipmentItems?.[safeSlot];
+    if (equippedItem && normalizeKey(equippedItem.itemId || equippedItem.id || equippedItem.key || "") === equippedKey) {
+      return equippedItem;
+    }
+
     return this.getInventoryEntries(viewer).find((item) => normalizeKey(item.itemId || item.id || item.key || "") === equippedKey) || {
       itemId: equippedKey,
       name: equippedKey,

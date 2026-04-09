@@ -414,6 +414,11 @@ function getEquippedInventoryItem(viewer, slot) {
     return null;
   }
 
+  const equippedItem = viewer?.equipmentItems?.[safeSlot];
+  if (equippedItem && normalizeKey(equippedItem?.itemId || equippedItem?.id || equippedItem?.key) === equippedKey) {
+    return equippedItem;
+  }
+
   const inventory = Array.isArray(viewer?.inventory) ? viewer.inventory : [];
   return inventory.find((entry) => normalizeKey(entry?.itemId || entry?.id || entry?.key) === equippedKey && normalizeKey(entry?.category) === safeSlot) || null;
 }

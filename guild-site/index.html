@@ -3,19 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Guild Hall</title>
+  <title>Character Hub</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="site-shell">
     <header class="hero">
       <div class="hero-copy">
-        <p class="eyebrow">Local Guild Terminal</p>
+        <p class="eyebrow">Character Hub</p>
         <h1>Guild Hall</h1>
-        <p class="hero-text">A local read-only dashboard for profiles, gear, class loadouts, titles, and the shop catalog.</p>
+        <p class="hero-text">Build a character, review your live adventurer sheet, and browse the persistent economy powering chat combat.</p>
+        <div class="hero-rules" id="creation-rules"></div>
       </div>
       <div class="hero-panel">
-        <div class="status-chip" id="read-only-badge">READ ONLY</div>
+        <div class="hero-topline">
+          <div class="status-chip" id="read-only-badge">LIVE</div>
+          <div class="status-chip accent" id="onboarding-badge">READY</div>
+        </div>
         <p class="hero-url" id="entry-url">http://127.0.0.1:8788/guild-shop/</p>
         <form id="player-form" class="player-form">
           <label for="player-input">Viewer</label>
@@ -24,19 +28,60 @@
             <button type="submit">Load</button>
           </div>
         </form>
+        <p class="hero-note" id="hero-note">Load a viewer to open onboarding or inspect the current character sheet.</p>
       </div>
     </header>
 
     <nav class="section-nav">
+      <a href="#character-creation-view">Character Creation</a>
       <a href="#profile-view">Profile</a>
+      <a href="#stats-view">Stats</a>
       <a href="#classes-view">Classes</a>
-      <a href="#titles-view">Titles</a>
       <a href="#inventory-view">Inventory</a>
+      <a href="#equipment-view">Equipment</a>
       <a href="#shop-view">Shop</a>
-      <a href="#leaderboard-view">Leaderboard</a>
+      <a href="#help-view">Help</a>
     </nav>
 
     <main class="grid-layout">
+      <section class="panel wide spotlight" id="character-creation-view">
+        <div class="panel-head split-head">
+          <div>
+            <p class="eyebrow">First Steps</p>
+            <h2>Character Creation</h2>
+          </div>
+          <div class="status-chip" id="creation-status">Awaiting profile</div>
+        </div>
+        <p class="panel-note" id="creation-copy">Choose a starting class, distribute your opening stats, and lock in the profile that will drive chat progression.</p>
+        <div class="creation-layout">
+          <section class="subpanel">
+            <div class="subpanel-head">
+              <h3>1. Choose Class</h3>
+              <span class="muted" id="selected-class-name">No class selected</span>
+            </div>
+            <div class="class-picker" id="creation-class-options"></div>
+          </section>
+
+          <section class="subpanel">
+            <div class="subpanel-head">
+              <h3>2. Assign Stats</h3>
+              <span class="points-pill" id="points-remaining">12 points remaining</span>
+            </div>
+            <div class="stat-allocator" id="creation-stat-allocator"></div>
+          </section>
+
+          <section class="subpanel">
+            <div class="subpanel-head">
+              <h3>3. Finalize</h3>
+              <span class="muted">Persistent and server-validated</span>
+            </div>
+            <div class="creation-summary" id="creation-summary"></div>
+            <button id="create-character-button" type="button">Finalize Character</button>
+            <div class="feedback-box" id="creation-feedback">No character changes submitted yet.</div>
+          </section>
+        </div>
+      </section>
+
       <section class="panel spotlight" id="profile-view">
         <div class="panel-head">
           <p class="eyebrow">Profile</p>
@@ -60,6 +105,7 @@
             <strong id="damage-value">0</strong>
           </article>
         </div>
+        <div class="profile-strip" id="profile-strip"></div>
         <div class="boss-banner" id="boss-banner">No active boss.</div>
       </section>
 
@@ -69,6 +115,7 @@
           <h2>Adventurer Sheet</h2>
         </div>
         <div class="stat-list" id="stats-list"></div>
+        <div class="reference-list" id="stat-reference-list"></div>
       </section>
 
       <section class="panel" id="classes-view">
@@ -77,16 +124,7 @@
           <h2>Current Loadout</h2>
         </div>
         <div class="slot-grid" id="class-slots"></div>
-        <div class="chip-list" id="unlocked-classes"></div>
-      </section>
-
-      <section class="panel" id="titles-view">
-        <div class="panel-head">
-          <p class="eyebrow">Titles</p>
-          <h2>Known Honors</h2>
-        </div>
-        <div class="slot-grid" id="title-slot"></div>
-        <div class="chip-list" id="unlocked-titles"></div>
+        <div class="reference-list" id="class-reference-list"></div>
       </section>
 
       <section class="panel" id="inventory-view">
@@ -94,8 +132,16 @@
           <p class="eyebrow">Inventory</p>
           <h2>Owned Gear</h2>
         </div>
-        <div class="slot-grid" id="equipment-slots"></div>
         <div class="inventory-list" id="inventory-list"></div>
+      </section>
+
+      <section class="panel" id="equipment-view">
+        <div class="panel-head">
+          <p class="eyebrow">Equipment</p>
+          <h2>Equipped Slots</h2>
+        </div>
+        <div class="slot-grid" id="equipment-slots"></div>
+        <div class="panel-note" id="equipment-scaffold-note">Site equip actions are scaffolded next. Use chat commands for live changes today.</div>
       </section>
 
       <section class="panel wide" id="shop-view">
@@ -103,8 +149,17 @@
           <p class="eyebrow">Shop</p>
           <h2>Guild Catalog</h2>
         </div>
-        <p class="panel-note">Read-only for now. Purchase and equip hooks can be added against the same API later.</p>
+        <p class="panel-note" id="shop-note">Browse the live catalog here. Buying and equipping from the site are intentionally staged for the next pass.</p>
         <div class="shop-columns" id="shop-columns"></div>
+      </section>
+
+      <section class="panel" id="help-view">
+        <div class="panel-head">
+          <p class="eyebrow">Help</p>
+          <h2>How It Works</h2>
+        </div>
+        <div class="help-list" id="help-list"></div>
+        <div class="chip-list" id="command-list"></div>
       </section>
 
       <section class="panel" id="leaderboard-view">

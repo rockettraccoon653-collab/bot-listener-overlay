@@ -12,6 +12,7 @@ const { toOverlayRelayEvents } = require("./overlay-relay");
 const { MONSTERS, normalizeKey } = require("./shop-config");
 const { getBossParticipationXp } = require("./player-progression");
 const { applyGoldRewardRules, applyXpRewardRules } = require("./player-rules");
+const { buildGuildHallUrl, createGuildHallAuthToken } = require("./guild-site-auth");
 require("dotenv").config();
 
 const OBSWebSocket = OBSWebSocketModule.default || OBSWebSocketModule;
@@ -119,10 +120,22 @@ function sanitizeUsername(rawUsername) {
   return safe || "traveler";
 }
 
+function getPublicLocalShopUrl(username = "") {
+  return buildGuildHallUrl({
+    host: LOCAL_SITE_HOST,
+    port: LOCAL_SITE_PORT,
+    player: username
+  });
+}
+
 function getLocalShopUrl(username = "") {
   const safeUser = String(username || "").trim().toLowerCase();
-  const suffix = safeUser ? `?player=${encodeURIComponent(safeUser)}` : "";
-  return `http://${LOCAL_SITE_HOST}:${LOCAL_SITE_PORT}/guild-shop/${suffix}`;
+  return buildGuildHallUrl({
+    host: LOCAL_SITE_HOST,
+    port: LOCAL_SITE_PORT,
+    player: safeUser,
+    authToken: safeUser ? createGuildHallAuthToken(safeUser) : ""
+  });
 }
 
 function normalizeBossLookup(rawBossName) {
@@ -416,6 +429,10 @@ if (LOCAL_SITE_ENABLED) {
     port: LOCAL_SITE_PORT,
     viewerDb,
     bossEngine,
+    getPublicShopUrl: getPublicLocalShopUrl,
+    broadcast: (payload) => {
+      broadcastOverlay(payload);
+    },
     getShopUrl: getLocalShopUrl,
     defaultPlayer: process.env.TWITCH_CHANNEL || "traveler"
   });
