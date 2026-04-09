@@ -9,10 +9,14 @@ const repoRoot = path.resolve(bridgeRoot, "..");
 const jsFiles = [
   path.join(repoRoot, "config.js"),
   path.join(repoRoot, "script.js"),
+  path.join(repoRoot, "guild-site", "app.js"),
   path.join(repoRoot, "extension", "panel.js"),
   path.join(bridgeRoot, "boss-engine.js"),
   path.join(bridgeRoot, "bridge.js"),
   path.join(bridgeRoot, "dice.js"),
+  path.join(bridgeRoot, "local-site.js"),
+  path.join(bridgeRoot, "player-progression.js"),
+  path.join(bridgeRoot, "player-rules.js"),
   path.join(bridgeRoot, "shop-config.js"),
   path.join(bridgeRoot, "shop-handler.js"),
   path.join(bridgeRoot, "viewer-db.js")
@@ -136,14 +140,14 @@ function checkScriptOrder(indexPath) {
   }
 }
 
-function checkPanelScriptInclude(panelPath) {
-  const htmlText = readText(panelPath);
-  if (!htmlText.includes('<script src="panel.js"></script>')) {
-    fail("extension/panel.html is missing panel.js script include");
+function checkScriptInclude(htmlPath, scriptName) {
+  const htmlText = readText(htmlPath);
+  if (!htmlText.includes(`<script src="${scriptName}"></script>`)) {
+    fail(`${path.relative(repoRoot, htmlPath)} is missing ${scriptName} script include`);
     return;
   }
 
-  pass("extension/panel.html includes panel.js");
+  pass(`${path.relative(repoRoot, htmlPath)} includes ${scriptName}`);
 }
 
 function loadOverlayConfig(configPath) {
@@ -246,13 +250,15 @@ function main() {
   const indexPath = path.join(repoRoot, "index.html");
   const configPath = path.join(repoRoot, "config.js");
   const scriptPath = path.join(repoRoot, "script.js");
+  const guildSiteHtmlPath = path.join(repoRoot, "guild-site", "index.html");
+  const guildSiteScriptPath = path.join(repoRoot, "guild-site", "app.js");
   const panelHtmlPath = path.join(repoRoot, "extension", "panel.html");
   const panelScriptPath = path.join(repoRoot, "extension", "panel.js");
   const bridgePath = path.join(bridgeRoot, "bridge.js");
   const envExamplePath = path.join(bridgeRoot, ".env.example");
   const viewerDataPath = path.join(bridgeRoot, "data", "viewers.json");
 
-  for (const filePath of [indexPath, panelHtmlPath, envExamplePath, viewerDataPath, ...jsFiles]) {
+  for (const filePath of [indexPath, guildSiteHtmlPath, panelHtmlPath, envExamplePath, viewerDataPath, ...jsFiles]) {
     ensureFileExists(filePath);
   }
 
@@ -265,8 +271,13 @@ function main() {
     checkDomBindings(indexPath, scriptPath);
   }
 
+  if (fs.existsSync(guildSiteHtmlPath) && fs.existsSync(guildSiteScriptPath)) {
+    checkScriptInclude(guildSiteHtmlPath, "app.js");
+    checkDomBindings(guildSiteHtmlPath, guildSiteScriptPath);
+  }
+
   if (fs.existsSync(panelHtmlPath) && fs.existsSync(panelScriptPath)) {
-    checkPanelScriptInclude(panelHtmlPath);
+    checkScriptInclude(panelHtmlPath, "panel.js");
     checkDomBindings(panelHtmlPath, panelScriptPath);
   }
 

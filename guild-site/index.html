@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Guild Hall</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="site-shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Local Guild Terminal</p>
+        <h1>Guild Hall</h1>
+        <p class="hero-text">A local read-only dashboard for profiles, gear, class loadouts, titles, and the shop catalog.</p>
+      </div>
+      <div class="hero-panel">
+        <div class="status-chip" id="read-only-badge">READ ONLY</div>
+        <p class="hero-url" id="entry-url">http://127.0.0.1:8788/guild-shop/</p>
+        <form id="player-form" class="player-form">
+          <label for="player-input">Viewer</label>
+          <div class="player-form-row">
+            <input id="player-input" name="player" type="text" placeholder="enter username" autocomplete="off">
+            <button type="submit">Load</button>
+          </div>
+        </form>
+      </div>
+    </header>
+
+    <nav class="section-nav">
+      <a href="#profile-view">Profile</a>
+      <a href="#classes-view">Classes</a>
+      <a href="#titles-view">Titles</a>
+      <a href="#inventory-view">Inventory</a>
+      <a href="#shop-view">Shop</a>
+      <a href="#leaderboard-view">Leaderboard</a>
+    </nav>
+
+    <main class="grid-layout">
+      <section class="panel spotlight" id="profile-view">
+        <div class="panel-head">
+          <p class="eyebrow">Profile</p>
+          <h2 id="profile-name">Traveler</h2>
+        </div>
+        <div class="metric-grid">
+          <article class="metric-card">
+            <span class="metric-label">Gold</span>
+            <strong id="gold-value">0</strong>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">Level</span>
+            <strong id="level-value">1</strong>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">Total XP</span>
+            <strong id="xp-value">0</strong>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">Damage</span>
+            <strong id="damage-value">0</strong>
+          </article>
+        </div>
+        <div class="boss-banner" id="boss-banner">No active boss.</div>
+      </section>
+
+      <section class="panel" id="stats-view">
+        <div class="panel-head">
+          <p class="eyebrow">Stats</p>
+          <h2>Adventurer Sheet</h2>
+        </div>
+        <div class="stat-list" id="stats-list"></div>
+      </section>
+
+      <section class="panel" id="classes-view">
+        <div class="panel-head">
+          <p class="eyebrow">Classes</p>
+          <h2>Current Loadout</h2>
+        </div>
+        <div class="slot-grid" id="class-slots"></div>
+        <div class="chip-list" id="unlocked-classes"></div>
+      </section>
+
+      <section class="panel" id="titles-view">
+        <div class="panel-head">
+          <p class="eyebrow">Titles</p>
+          <h2>Known Honors</h2>
+        </div>
+        <div class="slot-grid" id="title-slot"></div>
+        <div class="chip-list" id="unlocked-titles"></div>
+      </section>
+
+      <section class="panel" id="inventory-view">
+        <div class="panel-head">
+          <p class="eyebrow">Inventory</p>
+          <h2>Owned Gear</h2>
+        </div>
+        <div class="slot-grid" id="equipment-slots"></div>
+        <div class="inventory-list" id="inventory-list"></div>
+      </section>
+
+      <section class="panel wide" id="shop-view">
+        <div class="panel-head">
+          <p class="eyebrow">Shop</p>
+          <h2>Guild Catalog</h2>
+        </div>
+        <p class="panel-note">Read-only for now. Purchase and equip hooks can be added against the same API later.</p>
+        <div class="shop-columns" id="shop-columns"></div>
+      </section>
+
+      <section class="panel" id="leaderboard-view">
+        <div class="panel-head">
+          <p class="eyebrow">Leaderboard</p>
+          <h2>Richest Adventurers</h2>
+        </div>
+        <ol class="leaderboard-list" id="leaderboard-list"></ol>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

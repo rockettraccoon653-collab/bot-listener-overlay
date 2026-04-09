@@ -7,7 +7,11 @@ const OBSWebSocketModule = require("obs-websocket-js");
 const viewerDb = require("./viewer-db");
 const { BossEngine } = require("./boss-engine");
 const { ShopHandler } = require("./shop-handler");
+const { createLocalGuildSite } = require("./local-site");
 const { toOverlayRelayEvents } = require("./overlay-relay");
+const { MONSTERS, normalizeKey } = require("./shop-config");
+const { getBossParticipationXp } = require("./player-progression");
+const { applyGoldRewardRules, applyXpRewardRules } = require("./player-rules");
 require("dotenv").config();
 
 const OBSWebSocket = OBSWebSocketModule.default || OBSWebSocketModule;
@@ -36,6 +40,10 @@ const STATE_BROADCAST_INTERVAL_MS = Math.max(5000, Number(process.env.STATE_BROA
 const LOCAL_WS_ENABLED = String(process.env.LOCAL_WS_ENABLED || "true").toLowerCase() !== "false";
 const LOCAL_WS_PORT = Number(process.env.LOCAL_WS_PORT || 8787);
 const LOCAL_WS_DEBUG = String(process.env.LOCAL_WS_DEBUG || "true").toLowerCase() !== "false";
+const LOCAL_SITE_ENABLED = String(process.env.LOCAL_SITE_ENABLED || "true").toLowerCase() !== "false";
+const LOCAL_SITE_HOST = process.env.LOCAL_SITE_HOST || "127.0.0.1";
+const LOCAL_SITE_PORT = Number(process.env.LOCAL_SITE_PORT || 8788);
+const ALLOW_ADMIN_MODS = String(process.env.ALLOW_ADMIN_MODS || "true").toLowerCase() !== "false";
 const SCENE_RELAY_PROVIDER = String(process.env.SCENE_RELAY_PROVIDER || "streamlabs").toLowerCase();
 
 const STREAMLABS_SCENE_RELAY_ENABLED = String(process.env.STREAMLABS_SCENE_RELAY_ENABLED || "true").toLowerCase() !== "false";
@@ -55,10 +63,11 @@ const relayWindow = {
 };
 
 const chatGoldWindow = new Map();
-const relayInstanceId = `${process.pid}-${Date.now().toString(36)}`;
+let relayInstanceId = `${process.pid}-${Date.now().toString(36)}`;
 let relaySequence = 0;
 let activeXpBoostEndsAt = 0;
 const recentPurchases = [];
+const ADMIN_COMMANDS = new Set(["!spawnboss", "!clearboss", "!resetsession", "!givegold", "!testevent"]);
 
 const CHAT_GOLD_RULES = {
   cooldownMs: 120000,
@@ -68,6 +77,7 @@ const CHAT_GOLD_RULES = {
 };
 
 let localWss = null;
+let localGuildSite = null;
 let obsClient = null;
 let obsReconnectTimer = null;
 let streamlabsClient = null;
@@ -76,11 +86,81 @@ let streamlabsPollTimer = null;
 let streamlabsRpcId = 1;
 let activeSceneId = null;
 let localWsClientId = 0;
+let currentSceneSnapshot = null;
+let lastLocalOverlayEvent = null;
+const recentLocalOverlayEvents = [];
 const streamlabsPending = new Map();
+
+function resetRelaySessionState() {
+  chatGoldWindow.clear();
+  relayWindow.startedAt = Date.now();
+  relayWindow.count = 0;
+  activeXpBoostEndsAt = 0;
+  recentPurchases.length = 0;
+  activeSceneId = null;
+  currentSceneSnapshot = null;
+  lastLocalOverlayEvent = null;
+  recentLocalOverlayEvents.length = 0;
+}
+
+function beginRelaySession(preserveScene = false) {
+  const sceneSnapshot = preserveScene ? currentSceneSnapshot : null;
+  const sceneId = preserveScene ? activeSceneId : null;
+
+  relayInstanceId = `${process.pid}-${Date.now().toString(36)}`;
+  relaySequence = 0;
+  resetRelaySessionState();
+  currentSceneSnapshot = sceneSnapshot;
+  activeSceneId = sceneId;
+}
 
 function sanitizeUsername(rawUsername) {
   const safe = String(rawUsername || "").trim();
   return safe || "traveler";
+}
+
+function getLocalShopUrl(username = "") {
+  const safeUser = String(username || "").trim().toLowerCase();
+  const suffix = safeUser ? `?player=${encodeURIComponent(safeUser)}` : "";
+  return `http://${LOCAL_SITE_HOST}:${LOCAL_SITE_PORT}/guild-shop/${suffix}`;
+}
+
+function normalizeBossLookup(rawBossName) {
+  const candidate = normalizeKey(rawBossName);
+  if (!candidate) {
+    return "";
+  }
+
+  if (MONSTERS[candidate]) {
+    return candidate;
+  }
+
+  const matchedBoss = Object.values(MONSTERS).find((boss) => normalizeKey(boss.name) === candidate);
+  return matchedBoss ? matchedBoss.key : "";
+}
+
+function getBadgeValue(tags, badgeKey) {
+  const badges = tags && typeof tags.badges === "object" ? tags.badges : {};
+  return String(badges[badgeKey] || "");
+}
+
+function isBroadcaster(tags, username) {
+  const normalizedUser = String(tags?.username || username || "").trim().toLowerCase();
+  const normalizedChannel = String(process.env.TWITCH_CHANNEL || "").trim().toLowerCase();
+  return getBadgeValue(tags, "broadcaster") === "1" || normalizedUser === normalizedChannel;
+}
+
+function isModerator(tags) {
+  return Boolean(tags?.mod) || getBadgeValue(tags, "moderator") === "1" || getBadgeValue(tags, "mod") === "1";
+}
+
+function canRunAdminCommand(tags, username) {
+  return isBroadcaster(tags, username) || (ALLOW_ADMIN_MODS && isModerator(tags));
+}
+
+function isAdminCommand(messageText) {
+  const command = String(messageText || "").trim().split(/\s+/)[0].toLowerCase();
+  return ADMIN_COMMANDS.has(command);
 }
 
 async function broadcastOverlay(payload) {
@@ -93,6 +173,24 @@ async function broadcastOverlay(payload) {
   } catch (error) {
     console.error("[bridge] extension broadcast failed:", error.message);
   }
+}
+
+function broadcastPlayerLevelUp(payload) {
+  const safePayload = {
+    type: "player_level_up",
+    username: payload.username,
+    level: Number(payload.level || 1),
+    previousLevel: Number(payload.previousLevel || 1),
+    totalXp: Number(payload.totalXp || 0),
+    xpAwarded: Number(payload.xpAwarded || 0),
+    levelsGained: Number(payload.levelsGained || 0),
+    source: String(payload.source || "progression")
+  };
+
+  console.log(`[bridge][progression] ${safePayload.username} reached level ${safePayload.level} (+${safePayload.xpAwarded} XP, ${safePayload.source})`);
+  broadcastOverlay(safePayload).catch((error) => {
+    console.error("[bridge][progression] level-up broadcast failed:", error.message);
+  });
 }
 
 function rememberRuntimeState(payload) {
@@ -132,6 +230,101 @@ function stampRelayPayload(payload) {
   };
 }
 
+async function sendChatReply(channel, reply) {
+  if (!reply) {
+    return;
+  }
+
+  try {
+    await chatClient.say(channel, reply);
+  } catch (error) {
+    console.error("[bridge] failed to send command reply:", error.message);
+  }
+}
+
+function resetLiveSession(requestedBy = "system") {
+  console.log(`[bridge][admin] resetting session requested by ${requestedBy}`);
+  bossEngine.resetSession();
+  beginRelaySession(true);
+  bossEngine.start();
+
+  if (currentSceneSnapshot) {
+    broadcastLocal(stampRelayPayload(currentSceneSnapshot));
+  }
+
+  broadcastShopState();
+}
+
+function handleAdminCommand(username, messageText) {
+  const text = String(messageText || "").trim();
+  const parts = text.split(/\s+/);
+  const command = String(parts[0] || "").toLowerCase();
+
+  if (command === "!spawnboss") {
+    const requestedBoss = parts.slice(1).join(" ").trim();
+    const bossKey = normalizeBossLookup(requestedBoss);
+    const result = requestedBoss
+      ? bossEngine.spawnBossByKey(bossKey, username, { force: true })
+      : bossEngine.spawnRandomBoss(username, { force: true });
+
+    if (requestedBoss && !bossKey) {
+      console.warn(`[bridge][admin] ${username} requested unknown boss '${requestedBoss}'`);
+      return { handled: true, reply: `${username}, unknown boss '${requestedBoss}'.` };
+    }
+
+    if (!result.ok) {
+      console.warn(`[bridge][admin] ${username} failed to spawn boss (${result.reason})`);
+      return { handled: true, reply: `${username}, boss spawn failed (${result.reason}).` };
+    }
+
+    console.log(`[bridge][admin] ${username} spawned ${result.boss.name}`);
+    return { handled: true, reply: `${username} spawned ${result.boss.name}.` };
+  }
+
+  if (command === "!clearboss") {
+    const result = bossEngine.clearActiveBoss(username, { announce: false });
+    if (!result.ok) {
+      console.warn(`[bridge][admin] ${username} tried to clear boss with none active`);
+      return { handled: true, reply: `${username}, there is no active boss.` };
+    }
+
+    console.log(`[bridge][admin] ${username} cleared ${result.bossName}`);
+    return { handled: true, reply: `${username} cleared ${result.bossName}.` };
+  }
+
+  if (command === "!resetsession") {
+    resetLiveSession(username);
+    return { handled: true, reply: `${username} reset the live session state.` };
+  }
+
+  if (command === "!givegold") {
+    const targetUser = sanitizeUsername(parts[1] || "");
+    const amount = Math.floor(Number(parts[2] || 0));
+    if (!parts[1] || !Number.isFinite(amount) || amount <= 0) {
+      return { handled: true, reply: `${username}, usage: !givegold [username] [amount].` };
+    }
+
+    const updated = viewerDb.addGold(targetUser, amount);
+    console.log(`[bridge][admin] ${username} gave ${amount} gold to ${targetUser}`);
+    return { handled: true, reply: `${targetUser} received ${amount} gold and now has ${updated.gold}.` };
+  }
+
+  if (command === "!testevent") {
+    console.log(`[bridge][admin] ${username} triggered a test overlay event`);
+    broadcastOverlay({
+      type: "shop_purchase",
+      by: username,
+      itemType: "admin",
+      itemName: "Admin Test Event"
+    }).catch((error) => {
+      console.error("[bridge][admin] test event broadcast failed:", error.message);
+    });
+    return { handled: true, reply: `${username} triggered a test overlay event.` };
+  }
+
+  return { handled: false };
+}
+
 const bossEngine = new BossEngine({
   onBroadcast: (payload) => {
     broadcastOverlay(payload);
@@ -146,11 +339,47 @@ const bossEngine = new BossEngine({
     const split = Math.max(1, Math.floor(rewardPool / fighters.length));
 
     for (const fighter of fighters) {
-      viewerDb.addGold(fighter.name, split);
+      const fighterViewer = viewerDb.getViewer(fighter.name);
+      const goldAward = applyGoldRewardRules({
+        viewer: fighterViewer,
+        classKey: fighterViewer?.className,
+        activeTitle: fighterViewer?.title,
+        baseGold: split
+      });
+      viewerDb.addGold(fighter.name, goldAward);
+      const xpAward = applyXpRewardRules({
+        viewer: fighterViewer,
+        classKey: fighterViewer?.className,
+        activeTitle: fighterViewer?.title,
+        baseXp: getBossParticipationXp({
+          damageDealt: fighter.dealt,
+          isTopDealer: fighter.name === topDealer
+        })
+      });
+      const xpResult = viewerDb.addXp(fighter.name, xpAward);
+
+      if (xpResult?.leveledUp) {
+        broadcastPlayerLevelUp({
+          username: fighter.name,
+          level: xpResult.level,
+          previousLevel: xpResult.previousLevel,
+          totalXp: xpResult.totalXp,
+          xpAwarded: xpResult.xpAwarded,
+          levelsGained: xpResult.levelsGained,
+          source: fighter.name === topDealer ? "boss-defeat-top-dealer" : "boss-defeat"
+        });
+      }
     }
 
     if (topDealer) {
-      viewerDb.addGold(topDealer, 10);
+      const topDealerViewer = viewerDb.getViewer(topDealer);
+      const topDealerBonus = applyGoldRewardRules({
+        viewer: topDealerViewer,
+        classKey: topDealerViewer?.className,
+        activeTitle: topDealerViewer?.title,
+        baseGold: 10
+      });
+      viewerDb.addGold(topDealer, topDealerBonus);
     }
 
     broadcastOverlay({
@@ -163,7 +392,8 @@ const bossEngine = new BossEngine({
   },
   getActiveCount: () => viewerDb.countRecentlyActive(3 * 60 * 1000),
   getCombatReadiness: () => viewerDb.getCombatReadiness(3 * 60 * 1000),
-  spawnIntervalMs: Number(process.env.BOSS_SPAWN_INTERVAL_MS || 10 * 60 * 1000),
+  cooldownMs: Number(process.env.BOSS_COOLDOWN_MS || process.env.BOSS_SPAWN_INTERVAL_MS || 10 * 60 * 1000),
+  initialSpawnDelayMs: Number(process.env.BOSS_INITIAL_SPAWN_MS || process.env.BOSS_COOLDOWN_MS || process.env.BOSS_SPAWN_INTERVAL_MS || 10 * 60 * 1000),
   retreatMs: Number(process.env.BOSS_RETREAT_MS || 5 * 60 * 1000)
 });
 
@@ -175,8 +405,21 @@ const shopHandler = new ShopHandler({
   },
   announce: (messageText) => {
     chatClient.say(process.env.TWITCH_CHANNEL, messageText).catch(() => {});
-  }
+  },
+  onPlayerLevelUp: broadcastPlayerLevelUp,
+  getShopUrl: getLocalShopUrl
 });
+
+if (LOCAL_SITE_ENABLED) {
+  localGuildSite = createLocalGuildSite({
+    host: LOCAL_SITE_HOST,
+    port: LOCAL_SITE_PORT,
+    viewerDb,
+    bossEngine,
+    getShopUrl: getLocalShopUrl,
+    defaultPlayer: process.env.TWITCH_CHANNEL || "traveler"
+  });
+}
 
 function canAwardChatGold(username, safeMessage) {
   const compact = safeMessage.trim();
@@ -265,13 +508,34 @@ function buildShopStatePayload() {
       recentFighters: bossState.recentFighters || []
     } : null,
     nextSpawnAt: Number(bossState.nextSpawnAt || 0),
+    cooldownMs: Number(bossState.cooldownMs || 0),
     xpBoostEndsAt,
     purchases: recentPurchases.slice(0, 5)
   };
 }
 
 function sendLocalSnapshot(client) {
-  sendLocalPayload(client, buildShopStatePayload());
+  sendLocalPayload(client, buildLocalStateSyncPayload());
+}
+
+function buildLocalStateSyncPayload() {
+  const shopState = buildShopStatePayload();
+
+  return {
+    type: "state_sync",
+    scene: currentSceneSnapshot ? {
+      type: currentSceneSnapshot.type,
+      sceneName: currentSceneSnapshot.sceneName,
+      sceneId: currentSceneSnapshot.sceneId,
+      provider: currentSceneSnapshot.provider,
+      at: currentSceneSnapshot.at
+    } : null,
+    boss: shopState.boss,
+    shop: shopState,
+    recentGuildEvents: recentLocalOverlayEvents.slice(0, 5),
+    lastEvent: lastLocalOverlayEvent,
+    syncedAt: Date.now()
+  };
 }
 
 function broadcastLocal(payload) {
@@ -299,7 +563,29 @@ function buildLocalRelayPayloads(payload) {
     return [];
   }
 
+  rememberLocalOverlayEvents(localPayloads);
+
   return localPayloads.map((entry) => stampRelayPayload(entry));
+}
+
+function rememberLocalOverlayEvents(localPayloads) {
+  if (!Array.isArray(localPayloads)) {
+    return;
+  }
+
+  for (const payload of localPayloads) {
+    if (!payload || typeof payload !== "object") {
+      continue;
+    }
+
+    if (payload.type === "boss_update" || payload.type === "attack" || payload.type === "shop") {
+      lastLocalOverlayEvent = payload;
+      recentLocalOverlayEvents.unshift(payload);
+      if (recentLocalOverlayEvents.length > 5) {
+        recentLocalOverlayEvents.length = 5;
+      }
+    }
+  }
 }
 
 function logLocalWsEvent(direction, payload, details = "") {
@@ -367,13 +653,15 @@ function sendStreamlabsRpc(method, params = {}, onResult) {
 }
 
 function broadcastSceneChange(sceneName, sceneId, provider) {
-  broadcastLocal({
+  currentSceneSnapshot = {
     type: "scene_change",
     sceneName,
     sceneId,
     provider,
     at: Date.now()
-  });
+  };
+
+  broadcastLocal(currentSceneSnapshot);
   console.log(`[bridge] scene changed (${provider}): ${sceneName}`);
 }
 
@@ -630,6 +918,8 @@ const chatClient = new tmi.Client({
   channels: [process.env.TWITCH_CHANNEL]
 });
 
+resetRelaySessionState();
+
 chatClient.on("message", async (channel, tags, message, self) => {
   if (self) return;
 
@@ -639,15 +929,22 @@ chatClient.on("message", async (channel, tags, message, self) => {
   viewerDb.markChatActivity(username);
 
   if (safeMessage.startsWith("!")) {
+    if (isAdminCommand(safeMessage)) {
+      if (!canRunAdminCommand(tags, username)) {
+        console.log(`[bridge][admin] ignored unauthorized command from ${username}: ${safeMessage}`);
+        return;
+      }
+
+      const adminResult = handleAdminCommand(username, safeMessage);
+      if (adminResult.handled) {
+        await sendChatReply(channel, adminResult.reply);
+        return;
+      }
+    }
+
     const commandResult = shopHandler.handleChatCommand(username, safeMessage);
     if (commandResult.handled) {
-      if (commandResult.reply) {
-        try {
-          await chatClient.say(channel, commandResult.reply);
-        } catch (error) {
-          console.error("[bridge] failed to send command reply:", error.message);
-        }
-      }
+      await sendChatReply(channel, commandResult.reply);
       return;
     }
   }
@@ -691,6 +988,7 @@ function broadcastShopState() {
 chatClient.connect()
   .then(() => {
     console.log("[bridge] connected to Twitch chat and relay is active.");
+    beginRelaySession(false);
     bossEngine.start();
 
     broadcastShopState();

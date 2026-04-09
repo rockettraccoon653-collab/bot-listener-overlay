@@ -13,7 +13,8 @@ class BossEngine {
       armedCount: 0,
       unarmedCount: 0
     }));
-    this.spawnIntervalMs = Number(options.spawnIntervalMs || 10 * 60 * 1000);
+    this.cooldownMs = Number(options.cooldownMs || options.spawnIntervalMs || 10 * 60 * 1000);
+    this.initialSpawnDelayMs = Number(options.initialSpawnDelayMs || this.cooldownMs);
     this.retreatMs = Number(options.retreatMs || 5 * 60 * 1000);
 
     this.activeBoss = null;
@@ -24,7 +25,7 @@ class BossEngine {
   }
 
   start() {
-    this.scheduleSpawn(this.spawnIntervalMs);
+    this.scheduleSpawn(this.initialSpawnDelayMs);
   }
 
   stop() {
@@ -34,11 +35,19 @@ class BossEngine {
     this.retreatTimer = null;
   }
 
+  resetSession() {
+    this.stop();
+    this.activeBoss = null;
+    this.nextSpawnAt = 0;
+    this.spawning = false;
+  }
+
   getState() {
     if (!this.activeBoss) {
       return {
         active: false,
-        nextSpawnAt: this.nextSpawnAt
+        nextSpawnAt: this.nextSpawnAt,
+        cooldownMs: this.cooldownMs
       };
     }
 
@@ -52,47 +61,49 @@ class BossEngine {
       visual: this.activeBoss.visual,
       summonedBy: this.activeBoss.summonedBy,
       recentFighters: this.getRecentFighters(this.activeBoss),
-      nextSpawnAt: 0
+      nextSpawnAt: 0,
+      cooldownMs: this.cooldownMs
     };
   }
 
   scheduleSpawn(delayMs) {
     if (this.spawnTimer) clearTimeout(this.spawnTimer);
 
-    const delay = Math.max(1000, Number(delayMs || this.spawnIntervalMs));
+    const delay = Math.max(1000, Number(delayMs || this.cooldownMs));
     this.nextSpawnAt = Date.now() + delay;
 
     this.onBroadcast({
       type: "boss_timer",
-      nextSpawnAt: this.nextSpawnAt
+      nextSpawnAt: this.nextSpawnAt,
+      cooldownMs: delay
     });
 
     this.spawnTimer = setTimeout(() => {
       this.spawnTimer = null;
       if (this.activeBoss || this.spawning) {
-        this.scheduleSpawn(this.spawnIntervalMs);
+        this.scheduleSpawn(this.cooldownMs);
         return;
       }
       this.spawnRandomBoss("system");
     }, delay);
   }
 
-  spawnRandomBoss(sourceUser) {
+  spawnRandomBoss(sourceUser, options = {}) {
     if (this.activeBoss || this.spawning) {
       return { ok: false, reason: "already-active" };
     }
 
     const readiness = this.getReadiness();
-    const pool = this.getEligibleMonsters(readiness);
+    const pool = options.force ? Object.values(MONSTERS) : this.getEligibleMonsters(readiness);
     if (!pool.length) {
       return { ok: false, reason: "no-eligible-boss" };
     }
 
     const picked = pool[Math.floor(Math.random() * pool.length)];
-    return this.spawnBossByKey(picked.key, sourceUser);
+    return this.spawnBossByKey(picked.key, sourceUser, options);
   }
 
-  spawnBossByKey(monsterKey, sourceUser) {
+  spawnBossByKey(monsterKey, sourceUser, options = {}) {
     if (this.activeBoss || this.spawning) {
       return { ok: false, reason: "already-active" };
     }
@@ -104,7 +115,7 @@ class BossEngine {
 
     const readiness = this.getReadiness();
     const minArmedCount = Math.max(0, Number(monster.minArmedCount || 0));
-    if (readiness.armedCount < minArmedCount) {
+    if (!options.force && readiness.armedCount < minArmedCount) {
       return { ok: false, reason: "not-ready", requiredArmed: minArmedCount };
     }
 
@@ -152,6 +163,35 @@ class BossEngine {
     return { ok: true, boss: this.activeBoss };
   }
 
+  clearActiveBoss(sourceUser = "system", options = {}) {
+    if (!this.activeBoss) {
+      return { ok: false, reason: "no-boss" };
+    }
+
+    const bossName = this.activeBoss.name;
+    if (this.retreatTimer) {
+      clearTimeout(this.retreatTimer);
+      this.retreatTimer = null;
+    }
+
+    this.activeBoss = null;
+    this.nextSpawnAt = 0;
+
+    if (!options.silent) {
+      this.onBroadcast({
+        type: "boss_retreat",
+        bossName
+      });
+
+      if (options.announce !== false) {
+        this.onAnnounce(`${bossName} was cleared by ${sourceUser}.`);
+      }
+    }
+
+    this.scheduleSpawn(this.cooldownMs);
+    return { ok: true, bossName };
+  }
+
   armRetreatTimer() {
     if (this.retreatTimer) clearTimeout(this.retreatTimer);
 
@@ -163,7 +203,7 @@ class BossEngine {
       });
       this.onAnnounce(`${this.activeBoss.name} retreated into the dark.`);
       this.activeBoss = null;
-      this.scheduleSpawn(this.spawnIntervalMs);
+      this.scheduleSpawn(this.cooldownMs);
     }, this.retreatMs);
   }
 
@@ -235,7 +275,7 @@ class BossEngine {
 
       this.onAnnounce(`${boss.name} has fallen. Rewards have been distributed.`);
       this.activeBoss = null;
-      this.scheduleSpawn(this.spawnIntervalMs);
+      this.scheduleSpawn(this.cooldownMs);
       return { ok: true, defeated: true };
     }
 

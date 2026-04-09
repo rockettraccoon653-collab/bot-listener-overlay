@@ -223,6 +223,86 @@ body {
   border-left: 4px solid #cf9a4a;
   border-radius: 8px;
   background: rgba(78, 53, 30, 0.5);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
+  transition: transform 0.28s ease, border-color 0.28s ease, background 0.28s ease, box-shadow 0.28s ease;
+}
+
+.event-item[data-emphasis="high"] {
+  background: linear-gradient(135deg, rgba(106, 44, 24, 0.78), rgba(61, 34, 22, 0.72));
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.18);
+}
+
+.event-item[data-emphasis="medium"] {
+  background: linear-gradient(135deg, rgba(95, 57, 28, 0.66), rgba(64, 40, 24, 0.64));
+}
+
+.event-item[data-priority="low"] {
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.1);
+}
+
+.event-item[data-priority="soft"] {
+  background: rgba(62, 46, 34, 0.42);
+  border-left-color: rgba(185, 160, 123, 0.65);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.08);
+}
+
+.event-item[data-event-type="attack"] {
+  border-left-color: #d97d47;
+}
+
+.event-item[data-event-type="purchase"] {
+  border-left-color: #d6b35d;
+}
+
+.event-item[data-event-type="boss-spawn"] {
+  border-left-color: #f06b4a;
+}
+
+.event-item[data-event-type="boss-defeat"] {
+  border-left-color: #f2cc74;
+}
+
+.event-item[data-event-type="boss-threshold"] {
+  border-left-color: #e79b56;
+}
+
+.event-item[data-event-type="boss-retreat"] {
+  border-left-color: #9f9485;
+}
+
+.event-item[data-event-type="reward"] {
+  border-left-color: #9dd18b;
+}
+
+.event-item[data-event-type="scene"] {
+  border-left-color: #7d8e9f;
+}
+
+.event-item[data-event-type="system"] {
+  border-left-color: rgba(185, 160, 123, 0.65);
+}
+
+.event-item-kicker {
+  color: #ffe0ab;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.event-item[data-priority="soft"] .event-item-kicker {
+  color: #d8c3a2;
+}
+
+.event-item-detail {
+  margin-top: 4px;
+  color: #f2e4c6;
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.event-item[data-priority="soft"] .event-item-detail {
+  color: #d9ccb1;
 }
 
 #level-box {
@@ -272,11 +352,27 @@ body {
 }
 
 #boss-panel {
+  --boss-accent: #d98b5a;
   top: 120px;
   left: 20px;
   width: min(460px, 30vw);
   min-height: 220px;
   z-index: 26;
+  border-color: color-mix(in srgb, var(--boss-accent) 68%, #f2d19a 32%);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.26), 0 0 0 1px rgba(255, 214, 158, 0.05) inset;
+  transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+}
+
+#boss-panel.boss-panel-spawn {
+  animation: bossPanelSpawnPulse 0.72s ease;
+}
+
+#boss-panel.boss-panel-damage {
+  animation: bossPanelDamagePulse 0.72s ease;
+}
+
+#boss-panel.boss-panel-defeat {
+  animation: bossPanelDefeatPulse 0.98s ease;
 }
 
 #boss-visual-row {
@@ -343,6 +439,15 @@ body {
   height: 100%;
   background: linear-gradient(90deg, #6d1111, #d95f2f, #f6c17b);
   transition: width 0.35s ease;
+  box-shadow: 0 0 16px rgba(244, 183, 108, 0.22);
+}
+
+#boss-hp-fill.boss-hp-hit {
+  animation: bossHpHitFlash 0.5s ease;
+}
+
+#boss-hp-fill.boss-hp-spawn {
+  animation: bossHpSpawnSweep 0.7s ease;
 }
 
 #boss-last-hit {
@@ -415,6 +520,27 @@ body {
   text-align: center;
   z-index: 32;
   animation: toastRise 0.35s ease;
+  transition: border-color 0.28s ease, box-shadow 0.28s ease, background 0.28s ease;
+}
+
+#shop-toast[data-tone="purchase"],
+#shop-toast.shop-toast-purchase {
+  border-color: rgba(246, 197, 107, 0.88);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.42), 0 0 18px rgba(246, 197, 107, 0.2);
+}
+
+#shop-toast[data-tone="boost"],
+#shop-toast.shop-toast-boost {
+  border-color: rgba(138, 211, 120, 0.9);
+  background: rgba(22, 35, 17, 0.92);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.42), 0 0 20px rgba(138, 211, 120, 0.22);
+}
+
+#shop-toast[data-tone="effect"],
+#shop-toast.shop-toast-effect {
+  border-color: rgba(239, 133, 89, 0.9);
+  background: rgba(44, 20, 14, 0.94);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.42), 0 0 20px rgba(239, 133, 89, 0.24);
 }
 
 #shop-toast-title {
@@ -1176,6 +1302,77 @@ body {
   to {
     opacity: 1;
     transform: translate(-50%, 0) scale(1);
+  }
+}
+
+@keyframes bossPanelSpawnPulse {
+  0% {
+    transform: translateY(0) scale(0.985);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.26);
+  }
+  45% {
+    transform: translateY(-4px) scale(1.01);
+    box-shadow: 0 24px 46px rgba(0, 0, 0, 0.28), 0 0 26px color-mix(in srgb, var(--boss-accent) 45%, white 55%);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.26);
+  }
+}
+
+@keyframes bossPanelDamagePulse {
+  0% {
+    transform: translateX(0);
+  }
+  24% {
+    transform: translateX(-5px);
+  }
+  48% {
+    transform: translateX(4px);
+  }
+  72% {
+    transform: translateX(-2px);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes bossPanelDefeatPulse {
+  0% {
+    transform: scale(1);
+    filter: saturate(1);
+  }
+  35% {
+    transform: scale(1.02);
+    filter: saturate(1.18);
+  }
+  100% {
+    transform: scale(1);
+    filter: saturate(1);
+  }
+}
+
+@keyframes bossHpHitFlash {
+  0% {
+    filter: brightness(1);
+  }
+  35% {
+    filter: brightness(1.5);
+  }
+  100% {
+    filter: brightness(1);
+  }
+}
+
+@keyframes bossHpSpawnSweep {
+  0% {
+    filter: brightness(1.6);
+    box-shadow: 0 0 0 rgba(244, 183, 108, 0);
+  }
+  100% {
+    filter: brightness(1);
+    box-shadow: 0 0 16px rgba(244, 183, 108, 0.22);
   }
 }
 

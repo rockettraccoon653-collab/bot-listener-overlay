@@ -36,7 +36,16 @@ Use query params to force local transport and avoid Twitch-context ambiguity dur
 - Panel local mode: `extension/panel.html?transport=local`
 - Custom relay URL: append `&ws=ws://127.0.0.1:8787`
 
-### 3. Watch transport status
+### 3. Open the local guild hall
+
+When the relay is running, the local guild site is available at:
+
+- `http://127.0.0.1:8788/guild-shop/`
+- `http://127.0.0.1:8788/guild-shop/?player=<username>`
+
+This page is read-only for now and shows the persistent profile, currency, XP, level, stats, classes, titles, inventory, equipped gear, shop catalog, and gold leaderboard.
+
+### 4. Watch transport status
 
 Both overlay and panel now show a transport badge:
 

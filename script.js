@@ -117,6 +117,7 @@ const sigilSecondary = document.getElementById("sigil-secondary");
 const embers = Array.from(document.querySelectorAll(".ember"));
 const sparks = Array.from(document.querySelectorAll(".spark"));
 const SCENE_AUDIO_EVENT = "overlay:levelup-audio";
+const UI_FEEDBACK_EVENT = "overlay:ui-feedback";
 
 const SIGIL_FORMS = [
   {
@@ -157,9 +158,10 @@ function readStoredRuntimeOverrides() {
 function readRuntimeOverrides() {
   const params = new URLSearchParams(window.location.search);
   const stored = readStoredRuntimeOverrides();
+  const rawTransportMode = String(params.get("transport") || stored.transportMode || "").trim().toLowerCase();
   return {
-    transportMode: String(params.get("transport") || stored.transportMode || "").trim().toLowerCase(),
-    localWsUrl: String(params.get("ws") || stored.localWsUrl || "").trim(),
+    transportMode: rawTransportMode.replace(/[^a-z]/g, ""),
+    localWsUrl: String(params.get("ws") || stored.localWsUrl || "").trim().replace(/\^/g, ""),
     staleAfterMs: Number(params.get("staleAfterMs") || stored.staleAfterMs || 0),
     expectedChannelId: String(params.get("channelId") || stored.expectedChannelId || "").trim(),
     authTimeoutMs: Number(params.get("authTimeoutMs") || stored.authTimeoutMs || 0)
@@ -255,13 +257,25 @@ const xpBoostState = {
 let chatLocalSocket = null;
 let chatSocketRetryTimer = null;
 let bossCountdownTicker = null;
+let overlayDevMessageListenerBound = false;
+let activeRelaySessionId = "";
 const seenRelayEvents = new Map();
+
+const DEV_OVERLAY_MESSAGE_TYPES = new Set([
+  "boss_spawn",
+  "boss_damage",
+  "boss_defeat",
+  "shop_purchase",
+  "scene_change",
+  "shop_state"
+]);
 
 const transportState = {
   requestedMode: ["auto", "local", "twitch"].includes(chatConfig.transportMode) ? chatConfig.transportMode : "auto",
   activeSource: "idle",
   status: "waiting",
   lastMessageAt: 0,
+  lastEventType: "",
   lastError: "",
   authorizedChannelId: "",
   isExtensionAuthorized: false,
@@ -277,6 +291,18 @@ let glowTimer = null;
 let shudderTimer = null;
 let pulseTimers = [];
 let toastTimer = null;
+let bossFeedbackTimer = null;
+let purchaseFeedbackTimer = null;
+let attackFeedBurst = null;
+
+const FEED_MAX_ITEMS = 6;
+const FEED_COLLAPSE_WINDOW_MS = 2200;
+const FEED_PRIORITY_DURATION_MS = {
+  high: 16000,
+  medium: 10500,
+  low: 7600,
+  soft: 5200
+};
 
 function getXpMultiplier() {
   if (Date.now() <= xpBoostState.expiresAt) {
@@ -337,9 +363,55 @@ function syncOverlayDebugBindings() {
 
   window.overlaySocket = chatLocalSocket;
   window.testOverlayEvent = (payload) => {
-    handleOverlayPayload(payload);
+    routeDevOverlayPayload(payload);
     return payload;
   };
+
+  bindDevOverlayMessageListener();
+}
+
+function routeDevOverlayPayload(payload) {
+  noteTransportActivity("local", payload);
+  handleOverlayPayload(payload);
+}
+
+function getDevOverlayPayload(messageData) {
+  if (!messageData || typeof messageData !== "object") {
+    return null;
+  }
+
+  const directPayload = typeof messageData.type === "string" ? messageData : null;
+  const nestedPayload = messageData.overlayPayload && typeof messageData.overlayPayload === "object"
+    ? messageData.overlayPayload
+    : null;
+  const payload = directPayload || nestedPayload;
+
+  if (!payload || !DEV_OVERLAY_MESSAGE_TYPES.has(String(payload.type || ""))) {
+    return null;
+  }
+
+  return payload;
+}
+
+function bindDevOverlayMessageListener() {
+  if (overlayDevMessageListenerBound) {
+    return;
+  }
+
+  window.addEventListener("message", (event) => {
+    if (!isLocalDevRelayMode()) {
+      return;
+    }
+
+    const payload = getDevOverlayPayload(event.data);
+    if (!payload) {
+      return;
+    }
+
+    routeDevOverlayPayload(payload);
+  });
+
+  overlayDevMessageListenerBound = true;
 }
 
 function shouldLogOverlayWsDebug() {
@@ -425,7 +497,7 @@ function bindTwitchTransport() {
     window.Twitch.ext.listen("broadcast", (_target, _contentType, message) => {
       try {
         const payload = typeof message === "string" ? JSON.parse(message) : message;
-        noteTransportActivity("twitch");
+        noteTransportActivity("twitch", payload);
         handleOverlayPayload(payload);
       } catch (_error) {
         // Ignore malformed broadcast payloads from unrelated extension traffic.
@@ -488,11 +560,12 @@ function setTransportState(nextState) {
   renderTransportStatus();
 }
 
-function noteTransportActivity(source) {
+function noteTransportActivity(source, payload = null) {
   setTransportState({
     activeSource: source,
     status: "live",
     lastMessageAt: Date.now(),
+    lastEventType: payload && payload.type ? String(payload.type) : transportState.lastEventType,
     lastError: ""
   });
 }
@@ -520,42 +593,204 @@ function renderTransportStatus() {
   }
 
   transportStatus.className = `transport-status transport-status-${status}`;
+
+  if (isLocalDevRelayMode() && transportState.activeSource !== "twitch") {
+    const lastEventType = transportState.lastEventType || "none";
+    const lastSeen = transportState.lastMessageAt
+      ? new Date(transportState.lastMessageAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      : "--:--:--";
+    transportStatus.textContent = `${sourceLabel} ${detail} ${lastEventType} ${lastSeen}`;
+    transportStatus.title = `Relay ${detail.toLowerCase()} | last event: ${lastEventType} | last message: ${lastSeen}`;
+    return;
+  }
+
   transportStatus.textContent = `${sourceLabel} ${detail}`;
+  transportStatus.title = "";
 }
 
 function showShopToastMessage(title, body) {
+  showShopToastMessageWithOptions(title, body);
+}
+
+function dispatchOverlayFeedback(detail) {
+  window.dispatchEvent(new CustomEvent(UI_FEEDBACK_EVENT, {
+    detail: detail || {}
+  }));
+}
+
+function clearTimedClass(element, className, timerRefName) {
+  if (!element) {
+    return;
+  }
+
+  if (timerRefName && globalThis[timerRefName]) {
+    clearTimeout(globalThis[timerRefName]);
+    globalThis[timerRefName] = null;
+  }
+
+  element.classList.remove(className);
+  void element.offsetWidth;
+  element.classList.add(className);
+
+  if (timerRefName) {
+    globalThis[timerRefName] = setTimeout(() => {
+      element.classList.remove(className);
+      globalThis[timerRefName] = null;
+    }, 680);
+  }
+}
+
+function pulseBossPanel(mode) {
+  if (!bossPanel) return;
+
+  const safeMode = String(mode || "damage").toLowerCase();
+  bossPanel.classList.remove("boss-panel-spawn", "boss-panel-damage", "boss-panel-defeat");
+  void bossPanel.offsetWidth;
+  bossPanel.classList.add(`boss-panel-${safeMode}`);
+
+  if (bossFeedbackTimer) {
+    clearTimeout(bossFeedbackTimer);
+  }
+
+  bossFeedbackTimer = setTimeout(() => {
+    bossPanel.classList.remove("boss-panel-spawn", "boss-panel-damage", "boss-panel-defeat");
+    bossFeedbackTimer = null;
+  }, safeMode === "defeat" ? 980 : 720);
+
+  dispatchOverlayFeedback({ system: "boss", mode: safeMode, boss: { ...bossState } });
+}
+
+function pulsePurchaseFeedback(mode = "purchase") {
+  if (!shopToast) return;
+
+  const safeMode = String(mode || "purchase").toLowerCase();
+  shopToast.classList.remove("shop-toast-purchase", "shop-toast-boost", "shop-toast-effect");
+  void shopToast.offsetWidth;
+  shopToast.classList.add(`shop-toast-${safeMode}`);
+
+  if (purchaseFeedbackTimer) {
+    clearTimeout(purchaseFeedbackTimer);
+  }
+
+  purchaseFeedbackTimer = setTimeout(() => {
+    shopToast.classList.remove("shop-toast-purchase", "shop-toast-boost", "shop-toast-effect");
+    purchaseFeedbackTimer = null;
+  }, 1200);
+
+  dispatchOverlayFeedback({ system: "purchase", mode: safeMode });
+}
+
+function nudgeBossHpBar(mode = "damage") {
+  if (!bossHpFill) return;
+
+  bossHpFill.classList.remove("boss-hp-hit", "boss-hp-spawn");
+  void bossHpFill.offsetWidth;
+  bossHpFill.classList.add(mode === "spawn" ? "boss-hp-spawn" : "boss-hp-hit");
+}
+
+function showShopToastMessageWithOptions(title, body, options = {}) {
   if (!shopToast || !shopToastTitle || !shopToastBody) return;
 
   if (toastTimer) {
     clearTimeout(toastTimer);
   }
 
+  const tone = String(options.tone || "purchase").toLowerCase();
   shopToastTitle.textContent = title;
   shopToastBody.textContent = body;
+  shopToast.dataset.tone = tone;
   shopToast.classList.remove("hidden");
+  pulsePurchaseFeedback(tone);
+  dispatchOverlayFeedback({ system: "toast", tone, title, body });
 
   toastTimer = setTimeout(() => {
     shopToast.classList.add("hidden");
   }, 4200);
 }
 
+function clearBossState() {
+  bossState.active = false;
+  bossState.key = "";
+  bossState.name = "";
+  bossState.tier = 1;
+  bossState.visual = null;
+  bossState.hp = 0;
+  bossState.maxHp = 0;
+  bossState.nextSpawnAt = 0;
+  bossState.recentFighters = [];
+  bossThresholdText.textContent = "";
+  bossLastHit.textContent = "";
+}
+
+function resetOverlaySessionState() {
+  clearBossState();
+  renderBossPanel();
+  renderBossCountdown();
+
+  questlineState.activeQuestIndex = 0;
+  questlineState.progressByQuestId.clear();
+  renderQuestlinePanel();
+
+  xpBoostState.multiplier = 1;
+  xpBoostState.expiresAt = 0;
+  renderXpBoostBadge();
+
+  currentXP = 0;
+  currentLevel = 1;
+  xpToNext = 100;
+  updateXPBar();
+
+  chatUserState.clear();
+  seenRelayEvents.clear();
+
+  sceneState.currentName = "";
+  sceneState.questlineVisibleUntil = 0;
+  clearQuestlineRevealTimer();
+  clearEventsRevealTimer();
+  applySceneLayoutState();
+
+  if (eventLog) {
+    eventLog.innerHTML = "";
+  }
+
+  if (toastTimer) {
+    clearTimeout(toastTimer);
+    toastTimer = null;
+  }
+  if (shopToast) {
+    shopToast.classList.add("hidden");
+  }
+
+  if (alertTimer) {
+    clearTimeout(alertTimer);
+    alertTimer = null;
+  }
+  if (alertBox) {
+    alertBox.classList.add("hidden");
+  }
+
+  stopLevelUpScene();
+}
+
+function syncRelaySession(payload) {
+  const nextSessionId = String(payload?.relayMeta?.instanceId || "").trim();
+  if (!nextSessionId) {
+    return;
+  }
+
+  if (activeRelaySessionId && activeRelaySessionId !== nextSessionId) {
+    resetOverlaySessionState();
+  }
+
+  activeRelaySessionId = nextSessionId;
+}
+
 function renderBossPanel() {
   if (!bossPanel) return;
 
   if (!bossState.active) {
-    bossPanel.classList.remove("hidden");
-    bossName.textContent = "No boss active";
-    bossAvatarGlyph.textContent = "--";
-    if (bossAvatar) {
-      bossAvatar.style.borderColor = "rgba(236, 164, 98, 0.86)";
-    }
-    if (bossLore) {
-      bossLore.textContent = "No active threat on the board.";
-    }
-    bossHpText.textContent = "0 / 0 HP";
+    bossPanel.classList.add("hidden");
     bossHpFill.style.width = "0%";
-    bossLastHit.textContent = "The guild gathers strength for the next battle.";
-    renderBossPartyStrip();
     return;
   }
 
@@ -571,6 +806,8 @@ function renderBossPanel() {
   }
   bossHpText.textContent = `${Math.max(0, Math.round(bossState.hp))} / ${Math.max(0, Math.round(bossState.maxHp))} HP`;
   const percent = bossState.maxHp > 0 ? Math.max(0, Math.min(100, (bossState.hp / bossState.maxHp) * 100)) : 0;
+  bossPanel.style.setProperty("--boss-accent", visual.accent);
+  bossPanel.style.setProperty("--boss-hp-percent", `${percent.toFixed(2)}%`);
   bossHpFill.style.width = `${percent}%`;
   renderBossPartyStrip();
 }
@@ -699,9 +936,305 @@ function renderBossCountdown() {
   bossNextTimer.textContent = `Next boss in ${mm}:${ss}`;
 }
 
+function applyShopStatePayload(payload) {
+  if (payload.boss) {
+    bossState.active = true;
+    bossState.key = payload.boss.key || bossState.key;
+    bossState.name = payload.boss.name || bossState.name || "Unknown Boss";
+    bossState.tier = Number(payload.boss.tier || bossState.tier || 1);
+    bossState.visual = payload.boss.visual || bossState.visual || null;
+    bossState.hp = Number(payload.boss.hp || bossState.hp || 0);
+    bossState.maxHp = Number(payload.boss.maxHp || bossState.maxHp || 0);
+    bossState.nextSpawnAt = 0;
+    bossState.recentFighters = Array.isArray(payload.boss.recentFighters) ? payload.boss.recentFighters : [];
+    bossLastHit.textContent = `Summoned by ${payload.boss.summonedBy || "the guild"}.`;
+    renderBossPanel();
+  } else {
+    bossState.active = false;
+    bossState.key = "";
+    bossState.name = "";
+    bossState.hp = 0;
+    bossState.maxHp = 0;
+    bossState.recentFighters = [];
+    bossThresholdText.textContent = "";
+    renderBossPanel();
+  }
+
+  bossState.nextSpawnAt = Number(payload.nextSpawnAt || bossState.nextSpawnAt || 0);
+  if (typeof payload.xpBoostEndsAt === "number") {
+    xpBoostState.expiresAt = Number(payload.xpBoostEndsAt || 0);
+    xpBoostState.multiplier = xpBoostState.expiresAt > Date.now() ? Math.max(2, xpBoostState.multiplier) : 1;
+    renderXpBoostBadge();
+  }
+  renderBossCountdown();
+}
+
+function buildFeedEntry(entry) {
+  const baseEntry = typeof entry === "string"
+    ? { type: "system", kicker: "Guild", detail: entry }
+    : { ...(entry || {}) };
+
+  const policyByType = {
+    "boss-spawn": { priority: "high", emphasis: "high" },
+    "boss-defeat": { priority: "high", emphasis: "high" },
+    "boss-threshold": { priority: "medium", emphasis: "medium" },
+    "boss-retreat": { priority: "soft", emphasis: "soft" },
+    attack: { priority: "low", emphasis: "medium" },
+    purchase: { priority: "low", emphasis: "medium" },
+    reward: { priority: "medium", emphasis: "medium" },
+    scene: { priority: "soft", emphasis: "soft" },
+    system: { priority: "soft", emphasis: "soft" }
+  };
+
+  const policy = policyByType[baseEntry.type] || policyByType.system;
+  const priority = baseEntry.priority || policy.priority;
+
+  return {
+    type: baseEntry.type || "system",
+    kicker: baseEntry.kicker || "Guild",
+    detail: baseEntry.detail || "Guild synced.",
+    emphasis: baseEntry.emphasis || policy.emphasis,
+    priority,
+    durationMs: Number(baseEntry.durationMs || FEED_PRIORITY_DURATION_MS[priority] || FEED_PRIORITY_DURATION_MS.soft),
+    actor: baseEntry.actor || "",
+    damage: Number(baseEntry.damage || 0),
+    hpText: baseEntry.hpText || ""
+  };
+}
+
+function updateEventLogItem(item, entry) {
+  const safeEntry = buildFeedEntry(entry);
+
+  item.className = "event-item";
+  item.dataset.eventType = safeEntry.type;
+  item.dataset.emphasis = safeEntry.emphasis;
+  item.dataset.priority = safeEntry.priority;
+
+  let kicker = item.querySelector(".event-item-kicker");
+  if (!kicker) {
+    kicker = document.createElement("div");
+    kicker.className = "event-item-kicker";
+    item.appendChild(kicker);
+  }
+  kicker.textContent = safeEntry.kicker;
+
+  let detail = item.querySelector(".event-item-detail");
+  if (!detail) {
+    detail = document.createElement("div");
+    detail.className = "event-item-detail";
+    item.appendChild(detail);
+  }
+  detail.textContent = safeEntry.detail;
+
+  if (item._dismissTimer) {
+    clearTimeout(item._dismissTimer);
+  }
+
+  item._dismissTimer = setTimeout(() => {
+    if (attackFeedBurst && attackFeedBurst.item === item) {
+      attackFeedBurst = null;
+    }
+    if (item.parentElement === eventLog) {
+      eventLog.removeChild(item);
+    }
+  }, safeEntry.durationMs);
+
+  return safeEntry;
+}
+
+function makeAttackBurstEntry(burst, latestEntry) {
+  if (burst.count <= 1) {
+    return latestEntry;
+  }
+
+  const hpNote = burst.lastHpText ? ` • ${burst.lastHpText} left` : "";
+  return {
+    type: "attack",
+    kicker: "Attack Flurry",
+    detail: `${burst.count} strikes • ${burst.totalDamage} dmg${hpNote}`,
+    priority: "low",
+    emphasis: "soft",
+    durationMs: FEED_PRIORITY_DURATION_MS.low
+  };
+}
+
+function mergeAttackFeedEntry(entry) {
+  if (entry.type !== "attack") {
+    attackFeedBurst = null;
+    return false;
+  }
+
+  const now = Date.now();
+  if (!attackFeedBurst || !attackFeedBurst.item?.isConnected || now - attackFeedBurst.lastAt > FEED_COLLAPSE_WINDOW_MS) {
+    return false;
+  }
+
+  attackFeedBurst.count += 1;
+  attackFeedBurst.totalDamage += Number(entry.damage || 0);
+  attackFeedBurst.lastAt = now;
+  attackFeedBurst.lastHpText = entry.hpText || attackFeedBurst.lastHpText;
+  updateEventLogItem(attackFeedBurst.item, makeAttackBurstEntry(attackFeedBurst, entry));
+  return true;
+}
+
+function trimEventLog() {
+  while (eventLog.children.length > FEED_MAX_ITEMS) {
+    const lastChild = eventLog.lastChild;
+    if (lastChild?._dismissTimer) {
+      clearTimeout(lastChild._dismissTimer);
+    }
+    if (attackFeedBurst && attackFeedBurst.item === lastChild) {
+      attackFeedBurst = null;
+    }
+    eventLog.removeChild(lastChild);
+  }
+}
+
+function describeGuildEvent(payload) {
+  function systemEntry(kicker, detail) {
+    return {
+      type: "system",
+      kicker,
+      detail,
+      priority: "soft",
+      emphasis: "soft"
+    };
+  }
+
+  if (!payload || typeof payload !== "object") {
+    return systemEntry("Sync", "Guild synced.");
+  }
+
+  if (payload.type === "attack") {
+    return {
+      type: "attack",
+      kicker: "Attack",
+      detail: `${payload.by || "Traveler"} hit ${payload.damage || 0}${payload.hpText ? ` • ${payload.hpText} left` : ""}`,
+      actor: payload.by || "Traveler",
+      damage: Number(payload.damage || 0),
+      hpText: payload.hpText || "",
+      priority: "low",
+      emphasis: "medium"
+    };
+  }
+
+  if (payload.type === "shop") {
+    return {
+      type: "purchase",
+      kicker: "Purchase",
+      detail: `${payload.by || "Traveler"} bought ${payload.itemName || "item"}.`,
+      priority: "low",
+      emphasis: "medium"
+    };
+  }
+
+  if (payload.type === "boss_update") {
+    if (payload.event === "spawn") {
+      return {
+        type: "boss-spawn",
+        kicker: "Boss Spawn",
+        detail: `${(payload.boss && payload.boss.name) || "Boss"} enters.`,
+        priority: "high",
+        emphasis: "high"
+      };
+    }
+
+    if (payload.event === "damage") {
+      return {
+        type: "attack",
+        kicker: "Attack",
+        detail: `${(payload.lastAttack && payload.lastAttack.by) || "Traveler"} hit ${(payload.lastAttack && payload.lastAttack.damage) || 0}`,
+        actor: (payload.lastAttack && payload.lastAttack.by) || "Traveler",
+        damage: Number((payload.lastAttack && payload.lastAttack.damage) || 0),
+        hpText: (payload.boss && payload.boss.hpText) || "",
+        priority: "low",
+        emphasis: "medium"
+      };
+    }
+
+    if (payload.event === "threshold") {
+      return {
+        type: "boss-threshold",
+        kicker: "Rage",
+        detail: `${Math.round(Number(payload.threshold || 0) * 100)}% threshold hit.`,
+        priority: "medium",
+        emphasis: "medium"
+      };
+    }
+
+    if (payload.event === "defeat") {
+      return {
+        type: "boss-defeat",
+        kicker: "Boss Defeat",
+        detail: `${(payload.boss && payload.boss.name) || "Boss"} falls.`,
+        priority: "high",
+        emphasis: "high"
+      };
+    }
+
+    if (payload.event === "retreat") {
+      return {
+        type: "boss-retreat",
+        kicker: "Boss Retreat",
+        detail: `${(payload.boss && payload.boss.name) || "Boss"} withdraws.`,
+        priority: "soft",
+        emphasis: "soft"
+      };
+    }
+  }
+
+  return systemEntry("Guild", "Guild synced.");
+}
+
+function createEventLogItem(entry) {
+  const safeEntry = buildFeedEntry(entry);
+
+  const item = document.createElement("div");
+  updateEventLogItem(item, safeEntry);
+  return item;
+}
+
+function renderRecentGuildEvents(events) {
+  if (!eventLog) return;
+
+  eventLog.innerHTML = "";
+  const entries = Array.isArray(events) ? events.slice(0, 5) : [];
+
+  entries.slice().reverse().forEach((payload) => {
+    const item = createEventLogItem(describeGuildEvent(payload));
+    eventLog.prepend(item);
+  });
+}
+
+function applyStateSyncPayload(payload) {
+  if (payload.scene && payload.scene.sceneName) {
+    setActiveScene(payload.scene.sceneName);
+  }
+
+  if (payload.shop && typeof payload.shop === "object") {
+    applyShopStatePayload(payload.shop);
+  } else if (payload.boss && typeof payload.boss === "object") {
+    applyShopStatePayload({
+      boss: payload.boss,
+      nextSpawnAt: bossState.nextSpawnAt,
+      xpBoostEndsAt: xpBoostState.expiresAt
+    });
+  }
+
+  if (Array.isArray(payload.recentGuildEvents)) {
+    renderRecentGuildEvents(payload.recentGuildEvents);
+  }
+}
+
 function handleOverlayPayload(payload) {
   if (!payload || typeof payload !== "object") return;
+  syncRelaySession(payload);
   if (!shouldProcessRelayPayload(payload)) return;
+
+  if (payload.type === "state_sync") {
+    applyStateSyncPayload(payload);
+    return;
+  }
 
   if (payload.type === "boss_update") {
     applyBossUpdatePayload(payload);
@@ -710,13 +1243,22 @@ function handleOverlayPayload(payload) {
 
   if (payload.type === "player_attack") {
     bossLastHit.textContent = `${payload.by || "Traveler"} used ${payload.command || "!attack"} for ${payload.damage || 0} damage.`;
-    addEventLog(`Attack: ${payload.by || "Traveler"} dealt ${payload.damage || 0} damage.`);
+    addEventLog({
+      type: "attack",
+      kicker: "Attack",
+      detail: `${payload.by || "Traveler"} hit ${payload.damage || 0}${payload.hpText ? ` • ${payload.hpText} left` : ""}`,
+      actor: payload.by || "Traveler",
+      damage: Number(payload.damage || 0),
+      hpText: payload.hpText || "",
+      priority: "low",
+      emphasis: "medium"
+    });
     return;
   }
 
   if (payload.type === "attack") {
     bossLastHit.textContent = `${payload.by || "Traveler"} used ${payload.command || "!attack"} for ${payload.damage || 0} damage.`;
-    addEventLog(`Attack: ${payload.by || "Traveler"} dealt ${payload.damage || 0} damage.`);
+    addEventLog(describeGuildEvent(payload));
     return;
   }
 
@@ -726,8 +1268,8 @@ function handleOverlayPayload(payload) {
   }
 
   if (payload.type === "shop") {
-    showShopToastMessage("Shop Purchase", `${payload.by || "A traveler"} bought ${payload.itemName || "an item"}.`);
-    addEventLog(`Shop: ${payload.by || "Traveler"} purchased ${payload.itemName || "item"}.`);
+    showShopToastMessageWithOptions("Shop Purchase", `${payload.by || "A traveler"} bought ${payload.itemName || "an item"}.`, { tone: "purchase" });
+    addEventLog(describeGuildEvent(payload));
     return;
   }
 
@@ -735,24 +1277,30 @@ function handleOverlayPayload(payload) {
     const sceneName = String(payload.sceneName || "").trim();
     if (!sceneName) return;
     setActiveScene(sceneName);
-    addEventLog(`Scene switched: ${sceneName}.`);
+    addEventLog({ type: "scene", kicker: "Scene", detail: `${sceneName} live.`, priority: "soft", emphasis: "soft" });
     return;
   }
 
   if (payload.type === "shop_purchase") {
-    showShopToastMessage("Shop Purchase", `${payload.by || "A traveler"} bought ${payload.itemName || "an item"}.`);
-    addEventLog(`Shop: ${payload.by || "Traveler"} purchased ${payload.itemName || "item"}.`);
+    showShopToastMessageWithOptions("Shop Purchase", `${payload.by || "A traveler"} bought ${payload.itemName || "an item"}.`, { tone: "purchase" });
+    addEventLog({
+      type: "purchase",
+      kicker: "Purchase",
+      detail: `${payload.by || "Traveler"} bought ${payload.itemName || "item"}.`,
+      priority: "low",
+      emphasis: "medium"
+    });
     return;
   }
 
   if (payload.type === "shop_effect") {
-    showShopToastMessage("Arcane Effect", `${payload.by || "A traveler"} invoked ${payload.itemName || payload.effectKey}.`);
+    showShopToastMessageWithOptions("Arcane Effect", `${payload.by || "A traveler"} invoked ${payload.itemName || payload.effectKey}.`, { tone: "effect" });
     triggerScreenShudder(0.75);
     return;
   }
 
   if (payload.type === "shop_sound") {
-    showShopToastMessage("Guild Sound", `${payload.by || "A traveler"} played ${payload.itemName || payload.soundKey}.`);
+    showShopToastMessageWithOptions("Guild Sound", `${payload.by || "A traveler"} played ${payload.itemName || payload.soundKey}.`, { tone: "purchase" });
     return;
   }
 
@@ -760,41 +1308,12 @@ function handleOverlayPayload(payload) {
     xpBoostState.multiplier = Math.max(1, Number(payload.multiplier || 1));
     xpBoostState.expiresAt = Number(payload.endsAt || payload.expiresAt || 0);
     renderXpBoostBadge();
-    showShopToastMessage("XP Boost Active", `${payload.by || "A traveler"} activated ${xpBoostState.multiplier}x XP.`);
+    showShopToastMessageWithOptions("XP Boost Active", `${payload.by || "A traveler"} activated ${xpBoostState.multiplier}x XP.`, { tone: "boost" });
     return;
   }
 
   if (payload.type === "shop_state") {
-    if (payload.boss) {
-      bossState.active = true;
-      bossState.key = payload.boss.key || bossState.key;
-      bossState.name = payload.boss.name || bossState.name || "Unknown Boss";
-      bossState.tier = Number(payload.boss.tier || bossState.tier || 1);
-      bossState.visual = payload.boss.visual || bossState.visual || null;
-      bossState.hp = Number(payload.boss.hp || bossState.hp || 0);
-      bossState.maxHp = Number(payload.boss.maxHp || bossState.maxHp || 0);
-      bossState.nextSpawnAt = 0;
-      bossState.recentFighters = Array.isArray(payload.boss.recentFighters) ? payload.boss.recentFighters : [];
-      bossLastHit.textContent = `Summoned by ${payload.boss.summonedBy || "the guild"}.`;
-      renderBossPanel();
-    } else {
-      bossState.active = false;
-      bossState.key = "";
-      bossState.name = "";
-      bossState.hp = 0;
-      bossState.maxHp = 0;
-      bossState.recentFighters = [];
-      bossThresholdText.textContent = "";
-      renderBossPanel();
-    }
-
-    bossState.nextSpawnAt = Number(payload.nextSpawnAt || bossState.nextSpawnAt || 0);
-    if (typeof payload.xpBoostEndsAt === "number") {
-      xpBoostState.expiresAt = Number(payload.xpBoostEndsAt || 0);
-      xpBoostState.multiplier = xpBoostState.expiresAt > Date.now() ? Math.max(2, xpBoostState.multiplier) : 1;
-      renderXpBoostBadge();
-    }
-    renderBossCountdown();
+    applyShopStatePayload(payload);
     return;
   }
 
@@ -818,7 +1337,10 @@ function handleOverlayPayload(payload) {
     bossLastHit.textContent = `Summoned by ${payload.boss?.summonedBy || "the guild"}.`;
     renderBossPanel();
     renderBossCountdown();
-    showShopToastMessage("Boss Spawned", `${bossState.name} entered the battlefield.`);
+    nudgeBossHpBar("spawn");
+    pulseBossPanel("spawn");
+    showShopToastMessageWithOptions("Boss Spawned", `${bossState.name} enters.`, { tone: "effect" });
+    addEventLog({ type: "boss-spawn", kicker: "Boss Spawn", detail: `${bossState.name} enters.`, priority: "high", emphasis: "high" });
     return;
   }
 
@@ -832,6 +1354,8 @@ function handleOverlayPayload(payload) {
       bossState.recentFighters = payload.recentFighters;
     }
     bossLastHit.textContent = `${payload.by || "Traveler"} used ${payload.command || "!attack"} for ${payload.damage || 0} damage.`;
+    nudgeBossHpBar("damage");
+    pulseBossPanel("damage");
     renderBossPanel();
     return;
   }
@@ -844,7 +1368,9 @@ function handleOverlayPayload(payload) {
   }
 
   if (payload.type === "boss_defeat") {
-    showShopToastMessage("Boss Defeated", `${payload.bossName || "Boss"} was slain by the guild.`);
+    pulseBossPanel("defeat");
+    showShopToastMessageWithOptions("Boss Defeated", `${payload.bossName || "Boss"} falls.`, { tone: "effect" });
+    addEventLog({ type: "boss-defeat", kicker: "Boss Defeat", detail: `${payload.bossName || "Boss"} falls.`, priority: "high", emphasis: "high" });
     bossState.active = false;
     bossState.key = "";
     bossState.name = "";
@@ -857,7 +1383,8 @@ function handleOverlayPayload(payload) {
   }
 
   if (payload.type === "boss_retreat") {
-    showShopToastMessage("Boss Retreated", `${payload.bossName || "Boss"} escaped into the dark.`);
+    showShopToastMessageWithOptions("Boss Retreated", `${payload.bossName || "Boss"} withdraws.`, { tone: "effect" });
+    addEventLog({ type: "boss-retreat", kicker: "Boss Retreat", detail: `${payload.bossName || "Boss"} withdraws.`, priority: "soft", emphasis: "soft" });
     bossState.active = false;
     bossState.key = "";
     bossState.name = "";
@@ -871,7 +1398,7 @@ function handleOverlayPayload(payload) {
 
   if (payload.type === "boss_rewards") {
     awardXP(Number(payload.guildXp || 0));
-    addEventLog(`Guild reward: +${payload.guildXp || 0} XP for boss victory.`);
+    addEventLog({ type: "reward", kicker: "Reward", detail: `Guild +${payload.guildXp || 0} XP.`, priority: "medium", emphasis: "medium" });
   }
 }
 
@@ -892,7 +1419,10 @@ function applyBossUpdatePayload(payload) {
     bossLastHit.textContent = `Summoned by ${boss.summonedBy || "the guild"}.`;
     renderBossPanel();
     renderBossCountdown();
-    showShopToastMessage("Boss Spawned", `${bossState.name} entered the battlefield.`);
+    nudgeBossHpBar("spawn");
+    pulseBossPanel("spawn");
+    showShopToastMessageWithOptions("Boss Spawned", `${bossState.name} enters.`, { tone: "effect" });
+    addEventLog({ type: "boss-spawn", kicker: "Boss Spawn", detail: `${bossState.name} enters.`, priority: "high", emphasis: "high" });
     return;
   }
 
@@ -906,6 +1436,8 @@ function applyBossUpdatePayload(payload) {
       bossState.recentFighters = boss.recentFighters;
     }
     bossLastHit.textContent = `${payload.lastAttack?.by || "Traveler"} used ${payload.lastAttack?.command || "!attack"} for ${payload.lastAttack?.damage || 0} damage.`;
+    nudgeBossHpBar("damage");
+    pulseBossPanel("damage");
     renderBossPanel();
     return;
   }
@@ -918,7 +1450,9 @@ function applyBossUpdatePayload(payload) {
   }
 
   if (payload.event === "defeat") {
-    showShopToastMessage("Boss Defeated", `${boss.name || "Boss"} was slain by the guild.`);
+    pulseBossPanel("defeat");
+    showShopToastMessageWithOptions("Boss Defeated", `${boss.name || "Boss"} falls.`, { tone: "effect" });
+    addEventLog({ type: "boss-defeat", kicker: "Boss Defeat", detail: `${boss.name || "Boss"} falls.`, priority: "high", emphasis: "high" });
     bossState.active = false;
     bossState.key = "";
     bossState.name = "";
@@ -931,7 +1465,8 @@ function applyBossUpdatePayload(payload) {
   }
 
   if (payload.event === "retreat") {
-    showShopToastMessage("Boss Retreated", `${boss.name || "Boss"} escaped into the dark.`);
+    showShopToastMessageWithOptions("Boss Retreated", `${boss.name || "Boss"} withdraws.`, { tone: "effect" });
+    addEventLog({ type: "boss-retreat", kicker: "Boss Retreat", detail: `${boss.name || "Boss"} withdraws.`, priority: "soft", emphasis: "soft" });
     bossState.active = false;
     bossState.key = "";
     bossState.name = "";
@@ -978,14 +1513,15 @@ function clearEventsRevealTimer() {
   sceneState.eventsTimer = null;
 }
 
-function tempShowEventsPanel() {
+function tempShowEventsPanel(durationMs = 0) {
   if (!overlay || !isGameScene(sceneState.currentName)) return;
   clearEventsRevealTimer();
   overlay.classList.add("events-temp-visible");
+  const revealDurationMs = Math.max(sceneControlConfig.gameEventsRevealDurationMs, Number(durationMs || 0));
   sceneState.eventsTimer = setTimeout(() => {
     overlay.classList.remove("events-temp-visible");
     sceneState.eventsTimer = null;
-  }, sceneControlConfig.gameEventsRevealDurationMs);
+  }, revealDurationMs);
 }
 
 function applySceneLayoutState() {
@@ -1344,7 +1880,7 @@ function connectLocalChatSocket() {
     try {
       const payload = JSON.parse(event.data);
       logOverlayWsMessage("incoming", payload);
-      noteTransportActivity("local");
+      noteTransportActivity("local", payload);
       handleOverlayPayload(payload);
     } catch (error) {
       if (shouldLogOverlayWsDebug()) {
@@ -1544,17 +2080,33 @@ function updateXPBar() {
   levelLabel.textContent = `Level ${currentLevel} ${getRankName(currentLevel)}`;
 }
 
-function addEventLog(text) {
-  const item = document.createElement("div");
-  item.className = "event-item";
-  item.textContent = text;
+function addEventLog(entry) {
+  const safeEntry = buildFeedEntry(entry);
 
-  tempShowEventsPanel();
-  eventLog.prepend(item);
+  tempShowEventsPanel(safeEntry.durationMs);
 
-  while (eventLog.children.length > 5) {
-    eventLog.removeChild(eventLog.lastChild);
+  if (mergeAttackFeedEntry(safeEntry)) {
+    dispatchOverlayFeedback({ system: "event-log", entry: safeEntry, collapsed: true });
+    return;
   }
+
+  const item = createEventLogItem(safeEntry);
+  eventLog.prepend(item);
+  if (safeEntry.type === "attack") {
+    attackFeedBurst = {
+      item,
+      count: 1,
+      totalDamage: Number(safeEntry.damage || 0),
+      lastHpText: safeEntry.hpText || "",
+      lastAt: Date.now()
+    };
+  } else {
+    attackFeedBurst = null;
+  }
+
+  dispatchOverlayFeedback({ system: "event-log", entry: safeEntry });
+
+  trimEventLog();
 }
 
 function showAlert(title, message) {

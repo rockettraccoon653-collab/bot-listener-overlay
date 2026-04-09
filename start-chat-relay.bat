@@ -6,8 +6,11 @@ set "ROOT_DIR=%~dp0"
 set "CHAT_BRIDGE_DIR=%ROOT_DIR%chat-bridge"
 set "WEB_PORT=3000"
 set "RELAY_PORT=8787"
+set "GUILD_SITE_PORT=8788"
 set "RELAY_URL=ws://127.0.0.1:%RELAY_PORT%"
-set "OVERLAY_URL=http://localhost:%WEB_PORT%/index.html?transport=local^&ws=%RELAY_URL%"
+set "OVERLAY_URL=http://localhost:%WEB_PORT%/index.html?transport=local&ws=%RELAY_URL%"
+set "OVERLAY_URL_DISPLAY=http://localhost:%WEB_PORT%/index.html?transport=local^&ws=%RELAY_URL%"
+set "GUILD_SITE_URL=http://127.0.0.1:%GUILD_SITE_PORT%/guild-shop/"
 
 echo.
 echo ==========================================
@@ -20,6 +23,8 @@ echo [1/6] Checking local ports...
 call :ensure_port_free %WEB_PORT% "web server"
 if errorlevel 1 goto :startup_failed
 call :ensure_port_free %RELAY_PORT% "relay"
+if errorlevel 1 goto :startup_failed
+call :ensure_port_free %GUILD_SITE_PORT% "guild site"
 if errorlevel 1 goto :startup_failed
 
 :: ── Step 2: Install dependencies if needed ──────────────────────────────
@@ -69,9 +74,11 @@ if errorlevel 1 (
 :: ── Step 4: Start the relay in its own window ────────────────────────────
 echo.
 echo [4/6] Starting chat relay...
-echo       (Twitch chat + Streamlabs scene detection)
+echo       (Twitch chat + Streamlabs scene detection + local guild site)
 start "Rockett Chat Relay" /D "%CHAT_BRIDGE_DIR%" cmd /k npm start
 call :wait_for_port %RELAY_PORT% "relay"
+if errorlevel 1 goto :startup_failed
+call :wait_for_port %GUILD_SITE_PORT% "guild site"
 if errorlevel 1 goto :startup_failed
 
 :: ── Step 5: Start the fixed local overlay server ──────────────────────────
@@ -84,15 +91,18 @@ if errorlevel 1 goto :startup_failed
 
 :: ── Step 6: Open the fixed local overlay URL ──────────────────────────────
 echo.
-echo [6/6] Opening overlay...
-echo       %OVERLAY_URL%
-start "" "%OVERLAY_URL%"
+echo [6/6] Opening local pages...
+echo       Overlay: %OVERLAY_URL_DISPLAY%
+echo       Guild Hall: %GUILD_SITE_URL%
+powershell -NoProfile -Command "Start-Process '%OVERLAY_URL%'"
+powershell -NoProfile -Command "Start-Process '%GUILD_SITE_URL%'"
 
 echo.
 echo [OK] Local launcher started.
 echo      Relay window: Rockett Chat Relay
 echo      Web server window: Rockett Overlay Server
-echo      Overlay URL: %OVERLAY_URL%
+echo      Overlay URL: %OVERLAY_URL_DISPLAY%
+echo      Guild Hall URL: %GUILD_SITE_URL%
 echo      Close both windows to stop local testing.
 pause
 exit /b 0
