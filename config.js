@@ -42,8 +42,8 @@ const overlayConfig = {
   chatParticipation: {
     enabled: true,
 
-    // Transport mode: auto, local, or twitch.
-    transportMode: "twitch",
+    // Transport mode: auto, local, hosted, or twitch.
+    transportMode: "auto",
 
     // Local OBS chat socket relay from chat-bridge (ws://127.0.0.1:8787 by default).
     localWsEnabled: false,
@@ -55,6 +55,8 @@ const overlayConfig = {
 
     // Optional hosted-mode validation for Twitch Extension auth.
     expectedChannelId: "",
+    // Optional standalone channel slug for hosted/browser-source fallback.
+    standaloneChannelSlug: "",
     authTimeoutMs: 12000,
 
     // Mark the transport as stale if no payload arrives in this window.

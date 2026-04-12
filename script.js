@@ -438,6 +438,22 @@ function shouldUseTwitchTransport() {
   return hasTwitchBroadcastSupport();
 }
 
+function fallbackToStandaloneTransport(reason = "Standalone fallback") {
+  if (canUseHostedTransport()) {
+    setTransportState({ activeSource: "standalone", status: "waiting", lastError: reason });
+    connectHostedEventStream();
+    return;
+  }
+
+  if (canUseLocalTransport()) {
+    setTransportState({ activeSource: "standalone", status: "waiting", lastError: reason });
+    connectLocalChatSocket();
+    return;
+  }
+
+  setTransportState({ activeSource: "standalone", status: "error", lastError: reason });
+}
+
 function clearTransportTimer(timerKey) {
   if (!transportState[timerKey]) {
     return;
@@ -455,6 +471,11 @@ function startTwitchAuthorizationWatch() {
   clearTransportTimer("authTimer");
   transportState.authTimer = setTimeout(() => {
     if (transportState.isExtensionAuthorized) {
+      return;
+    }
+
+    if (transportState.requestedMode !== "twitch") {
+      fallbackToStandaloneTransport(hasTwitchBroadcastSupport() ? "Auth timeout" : "No context");
       return;
     }
 
@@ -562,12 +583,7 @@ function beginTransportBootstrap() {
         return;
       }
 
-      if (canUseHostedTransport()) {
-        connectHostedEventStream();
-        return;
-      }
-
-      connectLocalChatSocket();
+      fallbackToStandaloneTransport("No context");
       return;
     }
 
@@ -1869,60 +1885,60 @@ function processChatParticipation(username, messageText) {
   }
 }
 
-function connectLocalChatSocket() {
-
-  function scheduleHostedEventsReconnect() {
-    if (!canUseHostedTransport() || hostedEventsRetryTimer) {
-      return;
-    }
-
-    hostedEventsRetryTimer = setTimeout(() => {
-      hostedEventsRetryTimer = null;
-      connectHostedEventStream();
-    }, 2500);
+function scheduleHostedEventsReconnect() {
+  if (!canUseHostedTransport() || hostedEventsRetryTimer) {
+    return;
   }
 
-  function connectHostedEventStream() {
-    if (!canUseHostedTransport()) {
-      return;
-    }
+  hostedEventsRetryTimer = setTimeout(() => {
+    hostedEventsRetryTimer = null;
+    connectHostedEventStream();
+  }, 2500);
+}
 
-    if (hostedEventStream && hostedEventStream.readyState !== EventSource.CLOSED) {
-      return;
-    }
+function connectHostedEventStream() {
+  if (!canUseHostedTransport()) {
+    return;
+  }
 
+  if (hostedEventStream && hostedEventStream.readyState !== EventSource.CLOSED) {
+    return;
+  }
+
+  try {
+    hostedEventStream = new EventSource(chatConfig.hostedEventsUrl);
+  } catch (_error) {
+    setTransportState({ activeSource: "hosted", status: "error", lastError: "Connect failed" });
+    scheduleHostedEventsReconnect();
+    return;
+  }
+
+  hostedEventStream.onopen = () => {
+    setTransportState({ activeSource: "hosted", status: "waiting", lastError: "" });
+    addEventLog("Hosted relay linked.");
+  };
+
+  hostedEventStream.onmessage = (event) => {
     try {
-      hostedEventStream = new EventSource(chatConfig.hostedEventsUrl);
+      const payload = JSON.parse(event.data);
+      noteTransportActivity("hosted", payload);
+      handleOverlayPayload(payload);
     } catch (_error) {
-      setTransportState({ activeSource: "hosted", status: "error", lastError: "Connect failed" });
-      scheduleHostedEventsReconnect();
-      return;
+      // Ignore malformed hosted payloads.
     }
+  };
 
-    hostedEventStream.onopen = () => {
-      setTransportState({ activeSource: "hosted", status: "waiting", lastError: "" });
-      addEventLog("Hosted relay linked.");
-    };
+  hostedEventStream.onerror = () => {
+    if (hostedEventStream) {
+      hostedEventStream.close();
+    }
+    hostedEventStream = null;
+    setTransportState({ activeSource: "hosted", status: "stale", lastError: "Reconnect" });
+    scheduleHostedEventsReconnect();
+  };
+}
 
-    hostedEventStream.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        noteTransportActivity("hosted", payload);
-        handleOverlayPayload(payload);
-      } catch (_error) {
-        // Ignore malformed hosted payloads.
-      }
-    };
-
-    hostedEventStream.onerror = () => {
-      if (hostedEventStream) {
-        hostedEventStream.close();
-      }
-      hostedEventStream = null;
-      setTransportState({ activeSource: "hosted", status: "stale", lastError: "Reconnect" });
-      scheduleHostedEventsReconnect();
-    };
-  }
+function connectLocalChatSocket() {
   if (!canUseLocalTransport()) return;
 
   if (chatLocalSocket && (chatLocalSocket.readyState === WebSocket.OPEN || chatLocalSocket.readyState === WebSocket.CONNECTING)) {

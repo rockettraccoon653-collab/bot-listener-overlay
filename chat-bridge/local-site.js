@@ -1,6 +1,7 @@
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
+const jwt = require("jsonwebtoken");
 const {
   SHOP_CATALOG,
   CLASSES,
@@ -81,7 +82,7 @@ function buildCorsHeaders(request, allowedOrigins) {
   if (!allowedOrigins.length || allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
     responseHeaders["Access-Control-Allow-Origin"] = allowedOrigins.includes("*") ? "*" : origin;
     responseHeaders["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
-    responseHeaders["Access-Control-Allow-Headers"] = "Content-Type";
+    responseHeaders["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Guild-Hall-Key, X-Guild-Channel-Slug, X-Guild-Player";
   }
 
   return responseHeaders;
@@ -92,18 +93,134 @@ function normalizePlayerName(input, fallback = "traveler") {
   return safe || fallback;
 }
 
+function normalizeChannelId(input) {
+  return String(input || "").trim();
+}
+
+function normalizeChannelSlug(input) {
+  return String(input || "").trim().toLowerCase();
+}
+
 function normalizeAuthToken(input) {
   return String(input || "").trim();
 }
 
-function resolveGuildAccessContext({ requestUrl, payload, defaultPlayer }) {
-  const requestedPlayer = normalizePlayerName(payload?.player || requestUrl.searchParams.get("player"), defaultPlayer);
+function getRequestOrigin(request) {
+  const rawOrigin = String(request?.headers?.origin || "").trim();
+  if (!rawOrigin) {
+    return "";
+  }
+
+  try {
+    return new URL(rawOrigin).origin;
+  } catch (_error) {
+    return rawOrigin.replace(/\/+$/, "");
+  }
+}
+
+function extractBearerToken(request) {
+  const authorization = String(request?.headers?.authorization || "").trim();
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match ? normalizeAuthToken(match[1]) : "";
+}
+
+function verifyExtensionAuthToken(token, expectedChannelId) {
+  const normalizedToken = normalizeAuthToken(token);
+  if (!normalizedToken) {
+    return null;
+  }
+
+  const extensionSecret = String(process.env.TWITCH_EXTENSION_SECRET_BASE64 || "").trim();
+  if (!extensionSecret) {
+    return null;
+  }
+
+  try {
+    const decodedSecret = Buffer.from(extensionSecret, "base64");
+    const payload = jwt.verify(normalizedToken, decodedSecret, { algorithms: ["HS256"] });
+    const tokenChannelId = normalizeChannelId(payload?.channel_id);
+    if (!tokenChannelId) {
+      return null;
+    }
+
+    if (expectedChannelId && tokenChannelId !== expectedChannelId) {
+      return null;
+    }
+
+    return {
+      channelId: tokenChannelId,
+      opaqueUserId: String(payload?.opaque_user_id || "").trim(),
+      userId: String(payload?.user_id || "").trim(),
+      role: String(payload?.role || "").trim().toLowerCase()
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
+function isTrustedStandaloneRequest({ request, standaloneApiKey, allowedOrigins }) {
+  const expectedKey = normalizeAuthToken(standaloneApiKey);
+  if (!expectedKey) {
+    return false;
+  }
+
+  const providedKey = normalizeAuthToken(request?.headers?.["x-guild-hall-key"]);
+  if (!providedKey || providedKey !== expectedKey) {
+    return false;
+  }
+
+  const origin = getRequestOrigin(request);
+  if (!origin) {
+    return false;
+  }
+
+  return !allowedOrigins.length || allowedOrigins.includes("*") || allowedOrigins.includes(origin);
+}
+
+function resolveGuildAccessContext({ request, requestUrl, payload, defaultPlayer, allowedOrigins, standaloneConfig }) {
+  const requestedPlayer = normalizePlayerName(
+    payload?.player
+      || request?.headers?.["x-guild-player"]
+      || requestUrl.searchParams.get("player"),
+    ""
+  );
   const authToken = normalizeAuthToken(payload?.authToken || requestUrl.searchParams.get("auth"));
+  const signedLinkAuthorized = verifyGuildHallAuthToken(requestedPlayer || defaultPlayer, authToken);
+
+  const extensionToken = normalizeAuthToken(payload?.extensionToken || extractBearerToken(request));
+  const extensionAuth = verifyExtensionAuthToken(extensionToken, standaloneConfig.channelId);
+
+  const trustedStandalone = isTrustedStandaloneRequest({
+    request,
+    standaloneApiKey: standaloneConfig.apiKey,
+    allowedOrigins
+  });
+
+  const resolvedPlayer = normalizePlayerName(requestedPlayer || standaloneConfig.defaultPlayer, defaultPlayer);
+
+  const mode = signedLinkAuthorized
+    ? "signed-link"
+    : extensionAuth
+      ? "twitch-extension"
+      : trustedStandalone
+        ? "standalone-trusted"
+        : "readonly";
 
   return {
-    player: requestedPlayer,
+    player: resolvedPlayer,
     authToken,
-    canEdit: verifyGuildHallAuthToken(requestedPlayer, authToken)
+    canEdit: Boolean(signedLinkAuthorized || extensionAuth || trustedStandalone),
+    authMode: mode,
+    channelContext: {
+      id: extensionAuth?.channelId || standaloneConfig.channelId || "",
+      slug: normalizeChannelSlug(
+        payload?.channelSlug
+          || request?.headers?.["x-guild-channel-slug"]
+          || requestUrl.searchParams.get("channelSlug")
+          || standaloneConfig.channelSlug
+      ),
+      source: extensionAuth ? "twitch" : "standalone"
+    }
   };
 }
 
@@ -399,12 +516,22 @@ function buildActionFingerprint(viewer, bossEngine) {
   });
 }
 
-function buildActionResponse({ ok, message, player, canEdit, viewerDb, bossEngine, getShopUrl, getPublicShopUrl }) {
+function buildActionResponse({ ok, message, player, canEdit, authMode, channelContext, viewerDb, bossEngine, getShopUrl, getPublicShopUrl }) {
   const viewer = viewerDb.getViewer(player);
   return {
     ok,
     message,
-    dashboard: buildDashboardPayload({ player, viewer, viewerDb, bossEngine, getShopUrl, getPublicShopUrl, canEdit })
+    dashboard: buildDashboardPayload({
+      player,
+      viewer,
+      viewerDb,
+      bossEngine,
+      getShopUrl,
+      getPublicShopUrl,
+      canEdit,
+      authMode,
+      channelContext
+    })
   };
 }
 
@@ -458,7 +585,7 @@ function readRequestBody(request) {
   });
 }
 
-function buildDashboardPayload({ player, viewer, viewerDb, bossEngine, getShopUrl, getPublicShopUrl, canEdit = false }) {
+function buildDashboardPayload({ player, viewer, viewerDb, bossEngine, getShopUrl, getPublicShopUrl, canEdit = false, authMode = "readonly", channelContext = null }) {
   const leaderboard = viewerDb.getTopGold(8).map((entry) => ({
     username: entry.username,
     gold: Number(entry.gold || 0),
@@ -471,6 +598,8 @@ function buildDashboardPayload({ player, viewer, viewerDb, bossEngine, getShopUr
       localOnly: true,
       readOnly: !canEdit,
       canEdit,
+      authMode,
+      channel: channelContext || { id: "", slug: "", source: "standalone" },
       player,
       generatedAt: Date.now(),
       entryUrl: canEdit ? getShopUrl(player) : getPublicShopUrl(player),
@@ -517,6 +646,12 @@ function createLocalGuildSite(options) {
   const getPublicShopUrl = options.getPublicShopUrl || ((player) => getShopUrl(player));
   const broadcast = typeof options.broadcast === "function" ? options.broadcast : () => {};
   const defaultPlayer = normalizePlayerName(options.defaultPlayer || "traveler", "traveler");
+  const standaloneConfig = {
+    apiKey: normalizeAuthToken(options.standaloneApiKey || process.env.GUILD_HALL_STANDALONE_API_KEY),
+    channelId: normalizeChannelId(options.standaloneChannelId || process.env.GUILD_HALL_STANDALONE_CHANNEL_ID || process.env.TWITCH_BROADCASTER_ID),
+    channelSlug: normalizeChannelSlug(options.standaloneChannelSlug || process.env.GUILD_HALL_STANDALONE_CHANNEL_SLUG || process.env.TWITCH_CHANNEL),
+    defaultPlayer: normalizePlayerName(options.standaloneDefaultPlayer || process.env.GUILD_HALL_STANDALONE_PLAYER || defaultPlayer, defaultPlayer)
+  };
   const shopHandler = new ShopHandler({
     viewerDb,
     bossEngine,
@@ -588,8 +723,36 @@ function createLocalGuildSite(options) {
       return;
     }
 
+    if (request.method === "GET" && requestUrl.pathname === "/api/guild/session") {
+      const access = resolveGuildAccessContext({
+        request,
+        requestUrl,
+        defaultPlayer,
+        allowedOrigins,
+        standaloneConfig
+      });
+
+      sendJson(response, 200, {
+        ok: true,
+        session: {
+          player: access.player,
+          canEdit: access.canEdit,
+          authMode: access.authMode,
+          channel: access.channelContext,
+          authToken: access.authToken
+        }
+      }, corsHeaders);
+      return;
+    }
+
     if (request.method === "GET" && requestUrl.pathname === "/api/guild/dashboard") {
-      const access = resolveGuildAccessContext({ requestUrl, defaultPlayer });
+      const access = resolveGuildAccessContext({
+        request,
+        requestUrl,
+        defaultPlayer,
+        allowedOrigins,
+        standaloneConfig
+      });
       const player = access.player;
       const viewer = viewerDb.getViewer(player);
       sendJson(response, 200, buildDashboardPayload({
@@ -599,7 +762,9 @@ function createLocalGuildSite(options) {
         bossEngine,
         getShopUrl,
         getPublicShopUrl,
-        canEdit: access.canEdit
+        canEdit: access.canEdit,
+        authMode: access.authMode,
+        channelContext: access.channelContext
       }), corsHeaders);
       return;
     }
@@ -607,7 +772,14 @@ function createLocalGuildSite(options) {
     if (request.method === "POST" && requestUrl.pathname === "/api/guild/character/create") {
       try {
         const payload = await readRequestBody(request);
-        const access = resolveGuildAccessContext({ requestUrl, payload, defaultPlayer });
+        const access = resolveGuildAccessContext({
+          request,
+          requestUrl,
+          payload,
+          defaultPlayer,
+          allowedOrigins,
+          standaloneConfig
+        });
         const player = access.player;
         if (!access.canEdit) {
           sendJson(response, 403, buildActionResponse({
@@ -615,6 +787,8 @@ function createLocalGuildSite(options) {
             message: "You can only edit your own Guild Hall profile.",
             player,
             canEdit: access.canEdit,
+            authMode: access.authMode,
+            channelContext: access.channelContext,
             viewerDb,
             bossEngine,
             getShopUrl,
@@ -664,7 +838,14 @@ function createLocalGuildSite(options) {
     if (request.method === "POST" && requestUrl.pathname === "/api/guild/shop/buy") {
       try {
         const payload = await readRequestBody(request);
-        const access = resolveGuildAccessContext({ requestUrl, payload, defaultPlayer });
+        const access = resolveGuildAccessContext({
+          request,
+          requestUrl,
+          payload,
+          defaultPlayer,
+          allowedOrigins,
+          standaloneConfig
+        });
         const player = access.player;
         if (!access.canEdit) {
           sendJson(response, 403, buildActionResponse({
@@ -672,6 +853,8 @@ function createLocalGuildSite(options) {
             message: "You can only edit your own Guild Hall profile.",
             player,
             canEdit: access.canEdit,
+            authMode: access.authMode,
+            channelContext: access.channelContext,
             viewerDb,
             bossEngine,
             getShopUrl,
@@ -686,6 +869,8 @@ function createLocalGuildSite(options) {
             message: "Finish character creation before using the shop.",
             player,
             canEdit: access.canEdit,
+            authMode: access.authMode,
+            channelContext: access.channelContext,
             viewerDb,
             bossEngine,
             getShopUrl,
@@ -721,6 +906,8 @@ function createLocalGuildSite(options) {
           message: action.reply || `${player} could not buy ${knownItem.name}.`,
           player,
           canEdit: access.canEdit,
+          authMode: access.authMode,
+          channelContext: access.channelContext,
           viewerDb,
           bossEngine,
           getShopUrl,
@@ -739,7 +926,14 @@ function createLocalGuildSite(options) {
     if (request.method === "POST" && requestUrl.pathname === "/api/guild/equipment/equip") {
       try {
         const payload = await readRequestBody(request);
-        const access = resolveGuildAccessContext({ requestUrl, payload, defaultPlayer });
+        const access = resolveGuildAccessContext({
+          request,
+          requestUrl,
+          payload,
+          defaultPlayer,
+          allowedOrigins,
+          standaloneConfig
+        });
         const player = access.player;
         if (!access.canEdit) {
           sendJson(response, 403, buildActionResponse({
@@ -747,6 +941,8 @@ function createLocalGuildSite(options) {
             message: "You can only edit your own Guild Hall profile.",
             player,
             canEdit: access.canEdit,
+            authMode: access.authMode,
+            channelContext: access.channelContext,
             viewerDb,
             bossEngine,
             getShopUrl,
@@ -761,6 +957,8 @@ function createLocalGuildSite(options) {
             message: "Finish character creation before equipping gear.",
             player,
             canEdit: access.canEdit,
+            authMode: access.authMode,
+            channelContext: access.channelContext,
             viewerDb,
             bossEngine,
             getShopUrl,
@@ -781,6 +979,8 @@ function createLocalGuildSite(options) {
           message: action.reply || `${player} could not equip that item.`,
           player,
           canEdit: access.canEdit,
+          authMode: access.authMode,
+          channelContext: access.channelContext,
           viewerDb,
           bossEngine,
           getShopUrl,
@@ -799,7 +999,14 @@ function createLocalGuildSite(options) {
     if (request.method === "POST" && requestUrl.pathname === "/api/guild/equipment/unequip") {
       try {
         const payload = await readRequestBody(request);
-        const access = resolveGuildAccessContext({ requestUrl, payload, defaultPlayer });
+        const access = resolveGuildAccessContext({
+          request,
+          requestUrl,
+          payload,
+          defaultPlayer,
+          allowedOrigins,
+          standaloneConfig
+        });
         const player = access.player;
         if (!access.canEdit) {
           sendJson(response, 403, buildActionResponse({
@@ -807,6 +1014,8 @@ function createLocalGuildSite(options) {
             message: "You can only edit your own Guild Hall profile.",
             player,
             canEdit: access.canEdit,
+            authMode: access.authMode,
+            channelContext: access.channelContext,
             viewerDb,
             bossEngine,
             getShopUrl,
@@ -821,6 +1030,8 @@ function createLocalGuildSite(options) {
             message: "Finish character creation before changing equipment.",
             player,
             canEdit: access.canEdit,
+            authMode: access.authMode,
+            channelContext: access.channelContext,
             viewerDb,
             bossEngine,
             getShopUrl,
@@ -841,6 +1052,8 @@ function createLocalGuildSite(options) {
           message: action.reply || `${player} could not unequip that slot.`,
           player,
           canEdit: access.canEdit,
+          authMode: access.authMode,
+          channelContext: access.channelContext,
           viewerDb,
           bossEngine,
           getShopUrl,

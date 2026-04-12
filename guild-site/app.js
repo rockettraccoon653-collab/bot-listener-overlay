@@ -37,11 +37,21 @@ const leaderboardList = document.getElementById("leaderboard-list");
 const state = {
   player: "",
   authToken: "",
+  extensionToken: "",
+  authMode: "readonly",
+  channelContext: { id: "", slug: "", source: "standalone" },
+  requestHeaders: {},
+  sessionReady: false,
+  loadingDashboard: false,
   dashboard: null,
   selectedClassKey: "",
   creationStats: {},
   creationPending: false,
   actionPending: false,
+  realtimeStream: null,
+  realtimeReconnectTimer: null,
+  pollingTimer: null,
+  pendingRefreshTimer: null,
   actionFeedback: {
     shop: "",
     equipment: ""
@@ -74,6 +84,200 @@ function getPlayerFromQuery() {
 function getAuthTokenFromQuery() {
   const params = new URLSearchParams(window.location.search);
   return String(params.get("auth") || "").trim();
+}
+
+function getRuntimeConfig() {
+  const runtime = window.GUILD_HALL_CONFIG?.runtime || {};
+  return {
+    mode: String(runtime.mode || "auto").trim().toLowerCase(),
+    authTimeoutMs: Math.max(1000, Number(runtime.authTimeoutMs) || 4000),
+    standaloneApiKey: String(runtime.standaloneApiKey || "").trim(),
+    standalonePlayer: String(runtime.standalonePlayer || "").trim().toLowerCase(),
+    standaloneChannelId: String(runtime.standaloneChannelId || "").trim(),
+    standaloneChannelSlug: String(runtime.standaloneChannelSlug || "").trim().toLowerCase()
+  };
+}
+
+function hasTwitchExtensionRuntime() {
+  return Boolean(window.Twitch && window.Twitch.ext && typeof window.Twitch.ext.onAuthorized === "function");
+}
+
+function waitForTwitchAuthorization(timeoutMs) {
+  if (!hasTwitchExtensionRuntime()) {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(null);
+    }, timeoutMs);
+
+    window.Twitch.ext.onAuthorized((auth) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(auth || null);
+    });
+  });
+}
+
+function buildRequestHeaders() {
+  const headers = {};
+  if (state.extensionToken) {
+    headers.Authorization = `Bearer ${state.extensionToken}`;
+  }
+
+  const runtime = getRuntimeConfig();
+  if (!state.extensionToken && runtime.standaloneApiKey) {
+    headers["X-Guild-Hall-Key"] = runtime.standaloneApiKey;
+  }
+
+  if (state.channelContext?.slug) {
+    headers["X-Guild-Channel-Slug"] = state.channelContext.slug;
+  }
+
+  if (state.player) {
+    headers["X-Guild-Player"] = state.player;
+  }
+
+  return headers;
+}
+
+function stopRealtimeSync() {
+  if (state.pendingRefreshTimer) {
+    clearTimeout(state.pendingRefreshTimer);
+    state.pendingRefreshTimer = null;
+  }
+
+  if (state.realtimeReconnectTimer) {
+    clearTimeout(state.realtimeReconnectTimer);
+    state.realtimeReconnectTimer = null;
+  }
+
+  if (state.pollingTimer) {
+    clearInterval(state.pollingTimer);
+    state.pollingTimer = null;
+  }
+
+  if (state.realtimeStream) {
+    state.realtimeStream.close();
+    state.realtimeStream = null;
+  }
+}
+
+function scheduleDashboardRefresh(reason = "sync") {
+  if (state.pendingRefreshTimer) {
+    clearTimeout(state.pendingRefreshTimer);
+  }
+
+  state.pendingRefreshTimer = setTimeout(() => {
+    state.pendingRefreshTimer = null;
+    if (state.loadingDashboard || state.actionPending || state.creationPending) {
+      return;
+    }
+
+    loadDashboard(state.player).catch(() => {});
+  }, reason === "poll" ? 0 : 350);
+}
+
+function connectRealtimeSync() {
+  stopRealtimeSync();
+
+  const eventsUrl = buildApiUrl("/api/overlay/events");
+  try {
+    state.realtimeStream = new EventSource(eventsUrl);
+  } catch (_error) {
+    state.realtimeStream = null;
+  }
+
+  if (state.realtimeStream) {
+    state.realtimeStream.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        const type = String(payload?.type || "");
+        if (["shop", "shop_purchase", "shop_state", "boss_update", "state_sync"].includes(type)) {
+          scheduleDashboardRefresh("sse");
+        }
+      } catch (_error) {
+        // Ignore malformed SSE payloads.
+      }
+    };
+
+    state.realtimeStream.onerror = () => {
+      if (state.realtimeStream) {
+        state.realtimeStream.close();
+      }
+      state.realtimeStream = null;
+      if (!state.realtimeReconnectTimer) {
+        state.realtimeReconnectTimer = setTimeout(() => {
+          state.realtimeReconnectTimer = null;
+          connectRealtimeSync();
+        }, 2500);
+      }
+    };
+  }
+
+  state.pollingTimer = setInterval(() => {
+    scheduleDashboardRefresh("poll");
+  }, 20000);
+}
+
+async function initializeRuntimeSession(playerHint = "") {
+  const runtime = getRuntimeConfig();
+  const requestedMode = runtime.mode;
+  const allowTwitch = requestedMode !== "standalone";
+  const auth = allowTwitch ? await waitForTwitchAuthorization(runtime.authTimeoutMs) : null;
+
+  state.extensionToken = String(auth?.token || "").trim();
+  state.channelContext = {
+    id: String(auth?.channelId || runtime.standaloneChannelId || "").trim(),
+    slug: String(runtime.standaloneChannelSlug || "").trim().toLowerCase(),
+    source: state.extensionToken ? "twitch" : "standalone"
+  };
+
+  const requestedPlayer = String(playerHint || state.player || runtime.standalonePlayer || getPlayerFromQuery() || "").trim().toLowerCase();
+  const params = new URLSearchParams();
+  if (requestedPlayer) {
+    params.set("player", requestedPlayer);
+  }
+  if (state.channelContext.slug) {
+    params.set("channelSlug", state.channelContext.slug);
+  }
+
+  const sessionResponse = await fetch(buildApiUrl(`/api/guild/session?${params.toString()}`), {
+    method: "GET",
+    cache: "no-store",
+    headers: buildRequestHeaders()
+  });
+
+  if (!sessionResponse.ok) {
+    throw new Error(`Session init failed: ${sessionResponse.status}`);
+  }
+
+  const sessionPayload = await sessionResponse.json();
+  const session = sessionPayload?.session || {};
+  state.player = String(session.player || requestedPlayer || "").trim().toLowerCase();
+  state.authToken = state.authToken || getAuthTokenFromQuery();
+  state.authMode = String(session.authMode || (state.extensionToken ? "twitch-extension" : "readonly"));
+  state.channelContext = session.channel || state.channelContext;
+  state.sessionReady = true;
+  state.requestHeaders = buildRequestHeaders();
+}
+
+async function ensureRuntimeSession(playerHint = "") {
+  if (state.sessionReady) {
+    if (playerHint && playerHint !== state.player) {
+      state.player = playerHint;
+      state.requestHeaders = buildRequestHeaders();
+    }
+    return;
+  }
+
+  await initializeRuntimeSession(playerHint);
+  connectRealtimeSync();
 }
 
 function setPlayerInQuery(player) {
@@ -625,6 +829,9 @@ function renderDashboard() {
 function applyDashboard(data, options = {}) {
   state.dashboard = data;
   state.player = data?.runtime?.player || state.player;
+  state.authMode = data?.runtime?.authMode || state.authMode;
+  state.channelContext = data?.runtime?.channel || state.channelContext;
+  state.requestHeaders = buildRequestHeaders();
   state.authToken = state.authToken || getAuthTokenFromQuery();
   if (options.resetCreation) {
     resetCreationState();
@@ -650,22 +857,32 @@ function adjustCreationStat(statKey, delta) {
 }
 
 async function loadDashboard(player) {
-  state.authToken = state.authToken || getAuthTokenFromQuery();
-  const params = new URLSearchParams();
-  if (player) {
-    params.set("player", player);
-  }
-  if (state.authToken) {
-    params.set("auth", state.authToken);
-  }
-  const query = params.toString();
-  const response = await fetch(buildApiUrl(`/api/guild/dashboard${query ? `?${query}` : ""}`), { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
+  state.loadingDashboard = true;
+  try {
+    await ensureRuntimeSession(player);
+    state.authToken = state.authToken || getAuthTokenFromQuery();
+    const params = new URLSearchParams();
+    const effectivePlayer = player || state.player;
+    if (effectivePlayer) {
+      params.set("player", effectivePlayer);
+    }
+    if (state.authToken) {
+      params.set("auth", state.authToken);
+    }
+    const query = params.toString();
+    const response = await fetch(buildApiUrl(`/api/guild/dashboard${query ? `?${query}` : ""}`), {
+      cache: "no-store",
+      headers: state.requestHeaders
+    });
+    if (!response.ok) {
+      throw new Error(`Request failed: ${response.status}`);
+    }
 
-  state.player = player;
-  applyDashboard(await response.json(), { resetCreation: true });
+    state.player = effectivePlayer;
+    applyDashboard(await response.json(), { resetCreation: true });
+  } finally {
+    state.loadingDashboard = false;
+  }
 }
 
 async function submitGuildAction(endpoint, payload, section) {
@@ -699,7 +916,8 @@ async function submitGuildAction(endpoint, payload, section) {
     const response = await fetch(buildApiUrl(endpoint), {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        ...state.requestHeaders
       },
       body: JSON.stringify({
         player: state.player,
@@ -748,7 +966,8 @@ async function createCharacter() {
     const response = await fetch(buildApiUrl("/api/guild/character/create"), {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        ...state.requestHeaders
       },
       body: JSON.stringify({
         player: state.player,
@@ -795,4 +1014,8 @@ createCharacterButton.addEventListener("click", () => {
 
 loadDashboard(getPlayerFromQuery()).catch((error) => {
   bossBanner.textContent = `Unable to load dashboard: ${error.message}`;
+});
+
+window.addEventListener("beforeunload", () => {
+  stopRealtimeSync();
 });
