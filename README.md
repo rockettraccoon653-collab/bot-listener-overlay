@@ -55,10 +55,16 @@ The Guild Hall web entry point is the standalone site in `guild-site/`:
 
 Keep the repo root deployment pointed at the overlay only if you still want the stream overlay hosted separately. The overlay root page remains `index.html` at the repo root and was not moved.
 
+There is also a split-ready frontend copy in `guild-hall-frontend-repo/` that can be moved into its own GitHub repository without changing the Guild Hall browser contract.
+
 For a standalone Guild Hall deployment, `guild-site/config.js` controls where the browser sends Guild Hall API requests:
 
 - leave `apiBaseUrl` empty when the site and `/api/guild/*` endpoints are served from the same origin
 - set `apiBaseUrl` to your relay or API host when the frontend is deployed separately, for example `https://your-api-host.example.com`
+
+When the Guild Hall frontend is hosted from a different repo or origin, set `GUILD_HALL_ALLOWED_ORIGINS` in `chat-bridge/.env` so the browser can call the Guild Hall API. Use a comma-separated list of exact origins, for example `https://guildhall.example.com,http://localhost:4173`.
+
+Set `GUILD_HALL_PUBLIC_WEB_ORIGIN` in `chat-bridge/.env` when signed `!shop` links should open the separate frontend instead of the local `http://127.0.0.1:8788/guild-shop/` URL. Keep `GUILD_HALL_SIGNING_SECRET` server-side so those owner links remain valid across bridge restarts.
 
 ### 4. Watch transport status
 
@@ -124,6 +130,13 @@ npm run check
 ```
 
 This validates JavaScript syntax, DOM bindings, config shape, env example coverage, and viewer JSON integrity.
+
+For runtime deployment preflight (required env vars, token formats, Render host safety, and Guild Hall origin sanity):
+
+```powershell
+Set-Location .\chat-bridge
+npm run check:runtime
+```
 
 ## Current Deployment Boundary
 

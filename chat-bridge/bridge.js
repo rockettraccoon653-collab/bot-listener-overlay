@@ -44,6 +44,7 @@ const LOCAL_WS_DEBUG = String(process.env.LOCAL_WS_DEBUG || "true").toLowerCase(
 const LOCAL_SITE_ENABLED = String(process.env.LOCAL_SITE_ENABLED || "true").toLowerCase() !== "false";
 const LOCAL_SITE_HOST = process.env.LOCAL_SITE_HOST || "127.0.0.1";
 const LOCAL_SITE_PORT = Number(process.env.LOCAL_SITE_PORT || 8788);
+const GUILD_HALL_PUBLIC_WEB_ORIGIN = String(process.env.GUILD_HALL_PUBLIC_WEB_ORIGIN || "").trim();
 const ALLOW_ADMIN_MODS = String(process.env.ALLOW_ADMIN_MODS || "true").toLowerCase() !== "false";
 const SCENE_RELAY_PROVIDER = String(process.env.SCENE_RELAY_PROVIDER || "streamlabs").toLowerCase();
 
@@ -121,6 +122,13 @@ function sanitizeUsername(rawUsername) {
 }
 
 function getPublicLocalShopUrl(username = "") {
+  if (GUILD_HALL_PUBLIC_WEB_ORIGIN) {
+    return buildGuildHallUrl({
+      baseUrl: GUILD_HALL_PUBLIC_WEB_ORIGIN,
+      player: username
+    });
+  }
+
   return buildGuildHallUrl({
     host: LOCAL_SITE_HOST,
     port: LOCAL_SITE_PORT,
@@ -130,6 +138,14 @@ function getPublicLocalShopUrl(username = "") {
 
 function getLocalShopUrl(username = "") {
   const safeUser = String(username || "").trim().toLowerCase();
+  if (GUILD_HALL_PUBLIC_WEB_ORIGIN) {
+    return buildGuildHallUrl({
+      baseUrl: GUILD_HALL_PUBLIC_WEB_ORIGIN,
+      player: safeUser,
+      authToken: safeUser ? createGuildHallAuthToken(safeUser) : ""
+    });
+  }
+
   return buildGuildHallUrl({
     host: LOCAL_SITE_HOST,
     port: LOCAL_SITE_PORT,

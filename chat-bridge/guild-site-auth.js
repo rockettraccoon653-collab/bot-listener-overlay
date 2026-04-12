@@ -11,7 +11,7 @@ function getSigningSecret() {
   return String(process.env.GUILD_HALL_SIGNING_SECRET || process.env.LOCAL_SITE_SIGNING_SECRET || runtimeSigningSecret);
 }
 
-function buildGuildHallUrl({ host = "127.0.0.1", port = 8788, player = "", authToken = "" } = {}) {
+function buildGuildHallUrl({ baseUrl = "", host = "127.0.0.1", port = 8788, player = "", authToken = "" } = {}) {
   const params = new URLSearchParams();
   const safePlayer = normalizeViewerIdentity(player);
   const safeToken = String(authToken || "").trim();
@@ -25,6 +25,13 @@ function buildGuildHallUrl({ host = "127.0.0.1", port = 8788, player = "", authT
   }
 
   const suffix = params.toString();
+  const explicitBaseUrl = String(baseUrl || "").trim();
+  if (explicitBaseUrl) {
+    const resolvedUrl = new URL(explicitBaseUrl.endsWith("/") ? explicitBaseUrl : `${explicitBaseUrl}/`);
+    resolvedUrl.search = suffix;
+    return resolvedUrl.toString();
+  }
+
   return `http://${host}:${port}/guild-shop/${suffix ? `?${suffix}` : ""}`;
 }
 

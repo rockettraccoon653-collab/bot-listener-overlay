@@ -8,6 +8,8 @@
   "scripts": {
     "start": "node bridge.js",
     "check": "node scripts/check.js",
+    "check:runtime": "node scripts/check-runtime.js",
+    "check:all": "npm run check && npm run check:runtime -- --allow-missing",
     "serve-overlay": "http-server .. -p 3000 -a 127.0.0.1 -c-1"
   },
   "dependencies": {

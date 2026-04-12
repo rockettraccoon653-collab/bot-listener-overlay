@@ -48,6 +48,45 @@ const MIME_TYPES = Object.freeze({
   ".json": "application/json; charset=utf-8"
 });
 
+function parseAllowedOrigins(input) {
+  const normalizedOrigins = [];
+
+  for (const rawEntry of String(input || "").split(",").map((entry) => entry.trim()).filter(Boolean)) {
+    if (rawEntry === "*") {
+      normalizedOrigins.push(rawEntry);
+      continue;
+    }
+
+    try {
+      normalizedOrigins.push(new URL(rawEntry).origin);
+    } catch (_error) {
+      normalizedOrigins.push(rawEntry.replace(/\/+$/, ""));
+    }
+  }
+
+  return Array.from(new Set(normalizedOrigins));
+}
+
+function buildCorsHeaders(request, allowedOrigins) {
+  const rawOrigin = String(request.headers.origin || "").trim();
+  const origin = rawOrigin ? rawOrigin.replace(/\/+$/, "") : "";
+  const responseHeaders = {
+    "Vary": "Origin"
+  };
+
+  if (!origin) {
+    return responseHeaders;
+  }
+
+  if (!allowedOrigins.length || allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
+    responseHeaders["Access-Control-Allow-Origin"] = allowedOrigins.includes("*") ? "*" : origin;
+    responseHeaders["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
+    responseHeaders["Access-Control-Allow-Headers"] = "Content-Type";
+  }
+
+  return responseHeaders;
+}
+
 function normalizePlayerName(input, fallback = "traveler") {
   const safe = String(input || "").trim().toLowerCase();
   return safe || fallback;
@@ -369,25 +408,27 @@ function buildActionResponse({ ok, message, player, canEdit, viewerDb, bossEngin
   };
 }
 
-function sendJson(response, statusCode, payload) {
+function sendJson(response, statusCode, payload, headers = {}) {
   response.writeHead(statusCode, {
     "Content-Type": MIME_TYPES[".json"],
-    "Cache-Control": "no-store"
+    "Cache-Control": "no-store",
+    ...headers
   });
   response.end(JSON.stringify(payload, null, 2));
 }
 
-function sendFile(response, filePath) {
+function sendFile(response, filePath, headers = {}) {
   try {
     const ext = path.extname(filePath).toLowerCase();
     const content = fs.readFileSync(filePath);
     response.writeHead(200, {
       "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
-      "Cache-Control": "no-store"
+      "Cache-Control": "no-store",
+      ...headers
     });
     response.end(content);
   } catch (_error) {
-    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", ...headers });
     response.end("Not found");
   }
 }
@@ -469,6 +510,7 @@ function buildDashboardPayload({ player, viewer, viewerDb, bossEngine, getShopUr
 function createLocalGuildSite(options) {
   const host = String(options.host || "127.0.0.1");
   const port = Number(options.port || 8788);
+  const allowedOrigins = parseAllowedOrigins(options.allowedOrigins || process.env.GUILD_HALL_ALLOWED_ORIGINS || "");
   const viewerDb = options.viewerDb;
   const bossEngine = options.bossEngine;
   const getShopUrl = options.getShopUrl;
@@ -485,6 +527,13 @@ function createLocalGuildSite(options) {
 
   const server = http.createServer(async (request, response) => {
     const requestUrl = new URL(request.url || "/", `http://${host}:${port}`);
+    const corsHeaders = buildCorsHeaders(request, allowedOrigins);
+
+    if (request.method === "OPTIONS" && requestUrl.pathname.startsWith("/api/guild/")) {
+      response.writeHead(204, corsHeaders);
+      response.end();
+      return;
+    }
 
     if (request.method === "GET" && requestUrl.pathname === "/api/guild/dashboard") {
       const access = resolveGuildAccessContext({ requestUrl, defaultPlayer });
@@ -498,7 +547,7 @@ function createLocalGuildSite(options) {
         getShopUrl,
         getPublicShopUrl,
         canEdit: access.canEdit
-      }));
+      }), corsHeaders);
       return;
     }
 
@@ -517,7 +566,7 @@ function createLocalGuildSite(options) {
             bossEngine,
             getShopUrl,
             getPublicShopUrl
-          }));
+          }), corsHeaders);
           return;
         }
         const classKey = String(payload.classKey || "").trim().toLowerCase();
@@ -526,7 +575,7 @@ function createLocalGuildSite(options) {
           sendJson(response, 400, {
             ok: false,
             errors: ["Choose a valid starting class."]
-          });
+          }, corsHeaders);
           return;
         }
 
@@ -536,7 +585,7 @@ function createLocalGuildSite(options) {
         });
 
         if (!result.ok) {
-          sendJson(response, 400, result);
+          sendJson(response, 400, result, corsHeaders);
           return;
         }
 
@@ -548,13 +597,13 @@ function createLocalGuildSite(options) {
             rules: viewerDb.CHARACTER_CREATION_RULES
           },
           entryUrl: getShopUrl(player)
-        });
+        }, corsHeaders);
         return;
       } catch (error) {
         sendJson(response, 400, {
           ok: false,
           errors: [error.message || "Unable to create character."]
-        });
+        }, corsHeaders);
         return;
       }
     }
@@ -574,7 +623,7 @@ function createLocalGuildSite(options) {
             bossEngine,
             getShopUrl,
             getPublicShopUrl
-          }));
+          }), corsHeaders);
           return;
         }
         const viewer = viewerDb.getViewer(player);
@@ -588,7 +637,7 @@ function createLocalGuildSite(options) {
             bossEngine,
             getShopUrl,
             getPublicShopUrl
-          }));
+          }), corsHeaders);
           return;
         }
         const itemKey = String(payload.itemKey || "").trim();
@@ -603,7 +652,7 @@ function createLocalGuildSite(options) {
             bossEngine,
             getShopUrl,
             getPublicShopUrl
-          }));
+          }), corsHeaders);
           return;
         }
 
@@ -623,13 +672,13 @@ function createLocalGuildSite(options) {
           bossEngine,
           getShopUrl,
           getPublicShopUrl
-        }));
+        }), corsHeaders);
         return;
       } catch (error) {
         sendJson(response, 400, {
           ok: false,
           message: error.message || "Unable to buy item."
-        });
+        }, corsHeaders);
         return;
       }
     }
@@ -649,7 +698,7 @@ function createLocalGuildSite(options) {
             bossEngine,
             getShopUrl,
             getPublicShopUrl
-          }));
+          }), corsHeaders);
           return;
         }
         const viewer = viewerDb.getViewer(player);
@@ -663,7 +712,7 @@ function createLocalGuildSite(options) {
             bossEngine,
             getShopUrl,
             getPublicShopUrl
-          }));
+          }), corsHeaders);
           return;
         }
         const itemKey = String(payload.itemKey || "").trim();
@@ -683,13 +732,13 @@ function createLocalGuildSite(options) {
           bossEngine,
           getShopUrl,
           getPublicShopUrl
-        }));
+        }), corsHeaders);
         return;
       } catch (error) {
         sendJson(response, 400, {
           ok: false,
           message: error.message || "Unable to equip item."
-        });
+        }, corsHeaders);
         return;
       }
     }
@@ -709,7 +758,7 @@ function createLocalGuildSite(options) {
             bossEngine,
             getShopUrl,
             getPublicShopUrl
-          }));
+          }), corsHeaders);
           return;
         }
         const viewer = viewerDb.getViewer(player);
@@ -723,7 +772,7 @@ function createLocalGuildSite(options) {
             bossEngine,
             getShopUrl,
             getPublicShopUrl
-          }));
+          }), corsHeaders);
           return;
         }
         const slot = String(payload.slot || "").trim();
@@ -743,29 +792,29 @@ function createLocalGuildSite(options) {
           bossEngine,
           getShopUrl,
           getPublicShopUrl
-        }));
+        }), corsHeaders);
         return;
       } catch (error) {
         sendJson(response, 400, {
           ok: false,
           message: error.message || "Unable to unequip item."
-        });
+        }, corsHeaders);
         return;
       }
     }
 
     if (request.method !== "GET") {
-      sendJson(response, 405, { error: "Method not allowed" });
+      sendJson(response, 405, { error: "Method not allowed" }, corsHeaders);
       return;
     }
 
     const staticFile = STATIC_ROUTES[requestUrl.pathname];
     if (staticFile) {
-      sendFile(response, path.join(siteRoot, staticFile));
+      sendFile(response, path.join(siteRoot, staticFile), corsHeaders);
       return;
     }
 
-    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", ...corsHeaders });
     response.end("Not found");
   });
 
