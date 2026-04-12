@@ -343,7 +343,8 @@ function normalizeChannelId(value) {
 }
 
 function canUseLocalTransport() {
-  return chatConfig.enabled && chatConfig.localWsEnabled && transportState.requestedMode !== "twitch";
+  const explicitLocalMode = transportState.requestedMode === "local";
+  return chatConfig.enabled && transportState.requestedMode !== "twitch" && (chatConfig.localWsEnabled || explicitLocalMode);
 }
 
 function isLocalDevRelayMode() {
