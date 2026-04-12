@@ -157,7 +157,10 @@ function readStoredRuntimeOverrides() {
 
 function readRuntimeOverrides() {
   const params = new URLSearchParams(window.location.search);
-  const stored = readStoredRuntimeOverrides();
+  const hostname = String(window.location.hostname || "").toLowerCase();
+  const isLocalHost = !hostname || hostname === "localhost" || hostname === "127.0.0.1";
+  const allowStoredOverrides = window.location.protocol === "file:" || isLocalHost;
+  const stored = allowStoredOverrides ? readStoredRuntimeOverrides() : {};
   const rawTransportMode = String(params.get("transport") || stored.transportMode || "").trim().toLowerCase();
   return {
     transportMode: rawTransportMode.replace(/[^a-z]/g, ""),

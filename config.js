@@ -43,10 +43,10 @@ const overlayConfig = {
     enabled: true,
 
     // Transport mode: auto, local, or twitch.
-    transportMode: "auto",
+    transportMode: "twitch",
 
     // Local OBS chat socket relay from chat-bridge (ws://127.0.0.1:8787 by default).
-    localWsEnabled: true,
+    localWsEnabled: false,
     localWsUrl: "ws://127.0.0.1:8787",
 
     // Optional hosted-mode validation for Twitch Extension auth.
