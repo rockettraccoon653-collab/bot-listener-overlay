@@ -197,6 +197,10 @@ async function broadcastOverlay(payload) {
   const stamped = stampRelayPayload(payload);
   broadcastLocalPayloads(payload);
 
+  if (localGuildSite && typeof localGuildSite.publishOverlayEvent === "function") {
+    localGuildSite.publishOverlayEvent(stamped);
+  }
+
   try {
     await postExtensionBroadcast(stamped);
   } catch (error) {

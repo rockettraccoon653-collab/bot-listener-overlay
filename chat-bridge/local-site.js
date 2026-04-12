@@ -524,14 +524,67 @@ function createLocalGuildSite(options) {
     announce: () => {},
     getShopUrl
   });
+  const overlayEventClients = new Set();
+  const overlayEventBacklog = [];
+
+  function pushOverlayEvent(payload) {
+    if (!payload || typeof payload !== "object") {
+      return;
+    }
+
+    const serialized = JSON.stringify(payload);
+    overlayEventBacklog.push(serialized);
+    if (overlayEventBacklog.length > 40) {
+      overlayEventBacklog.shift();
+    }
+
+    for (const client of overlayEventClients) {
+      try {
+        client.write(`data: ${serialized}\n\n`);
+      } catch (_error) {
+        overlayEventClients.delete(client);
+      }
+    }
+  }
+
+  const overlayHeartbeat = setInterval(() => {
+    for (const client of overlayEventClients) {
+      try {
+        client.write(": keepalive\n\n");
+      } catch (_error) {
+        overlayEventClients.delete(client);
+      }
+    }
+  }, 20000);
 
   const server = http.createServer(async (request, response) => {
     const requestUrl = new URL(request.url || "/", `http://${host}:${port}`);
     const corsHeaders = buildCorsHeaders(request, allowedOrigins);
 
-    if (request.method === "OPTIONS" && requestUrl.pathname.startsWith("/api/guild/")) {
+    if (request.method === "OPTIONS" && (requestUrl.pathname.startsWith("/api/guild/") || requestUrl.pathname.startsWith("/api/overlay/"))) {
       response.writeHead(204, corsHeaders);
       response.end();
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/api/overlay/events") {
+      response.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Connection": "keep-alive",
+        ...corsHeaders
+      });
+
+      response.write(": connected\n\n");
+
+      for (const serialized of overlayEventBacklog) {
+        response.write(`data: ${serialized}\n\n`);
+      }
+
+      overlayEventClients.add(response);
+      request.on("close", () => {
+        overlayEventClients.delete(response);
+      });
       return;
     }
 
@@ -825,6 +878,20 @@ function createLocalGuildSite(options) {
   server.on("error", (error) => {
     console.error(`[bridge] local guild site error: ${error.message}`);
   });
+
+  server.on("close", () => {
+    clearInterval(overlayHeartbeat);
+    for (const client of overlayEventClients) {
+      try {
+        client.end();
+      } catch (_error) {
+        // ignore best-effort cleanup
+      }
+    }
+    overlayEventClients.clear();
+  });
+
+  server.publishOverlayEvent = pushOverlayEvent;
 
   return server;
 }

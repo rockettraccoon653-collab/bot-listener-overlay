@@ -49,6 +49,10 @@ const overlayConfig = {
     localWsEnabled: false,
     localWsUrl: "ws://127.0.0.1:8787",
 
+    // Optional hosted relay stream for Browser Source use when Twitch extension context is unavailable.
+    // Example: https://guild-hall-backend.onrender.com/api/overlay/events
+    hostedEventsUrl: "",
+
     // Optional hosted-mode validation for Twitch Extension auth.
     expectedChannelId: "",
     authTimeoutMs: 12000,

@@ -165,6 +165,7 @@ function readRuntimeOverrides() {
   return {
     transportMode: rawTransportMode.replace(/[^a-z]/g, ""),
     localWsUrl: String(params.get("ws") || stored.localWsUrl || "").trim().replace(/\^/g, ""),
+    hostedEventsUrl: String(params.get("events") || stored.hostedEventsUrl || "").trim().replace(/\^/g, ""),
     staleAfterMs: Number(params.get("staleAfterMs") || stored.staleAfterMs || 0),
     expectedChannelId: String(params.get("channelId") || stored.expectedChannelId || "").trim(),
     authTimeoutMs: Number(params.get("authTimeoutMs") || stored.authTimeoutMs || 0)
@@ -179,6 +180,7 @@ const chatConfig = {
   transportMode: String(runtimeOverrides.transportMode || overlayConfig.chatParticipation?.transportMode || "auto").toLowerCase(),
   localWsEnabled: overlayConfig.chatParticipation?.localWsEnabled ?? true,
   localWsUrl: runtimeOverrides.localWsUrl || overlayConfig.chatParticipation?.localWsUrl || "ws://127.0.0.1:8787",
+  hostedEventsUrl: runtimeOverrides.hostedEventsUrl || overlayConfig.chatParticipation?.hostedEventsUrl || "",
   expectedChannelId: String(runtimeOverrides.expectedChannelId || overlayConfig.chatParticipation?.expectedChannelId || "").trim(),
   authTimeoutMs: Math.max(2000, Number(runtimeOverrides.authTimeoutMs || overlayConfig.chatParticipation?.authTimeoutMs || 12000)),
   staleAfterMs: Math.max(5000, Number(runtimeOverrides.staleAfterMs || overlayConfig.chatParticipation?.staleAfterMs || 45000)),
@@ -259,6 +261,8 @@ const xpBoostState = {
 
 let chatLocalSocket = null;
 let chatSocketRetryTimer = null;
+let hostedEventStream = null;
+let hostedEventsRetryTimer = null;
 let bossCountdownTicker = null;
 let overlayDevMessageListenerBound = false;
 let activeRelaySessionId = "";
@@ -274,7 +278,7 @@ const DEV_OVERLAY_MESSAGE_TYPES = new Set([
 ]);
 
 const transportState = {
-  requestedMode: ["auto", "local", "twitch"].includes(chatConfig.transportMode) ? chatConfig.transportMode : "auto",
+  requestedMode: ["auto", "local", "twitch", "hosted"].includes(chatConfig.transportMode) ? chatConfig.transportMode : "auto",
   activeSource: "idle",
   status: "waiting",
   lastMessageAt: 0,
@@ -345,6 +349,10 @@ function normalizeChannelId(value) {
 function canUseLocalTransport() {
   const explicitLocalMode = transportState.requestedMode === "local";
   return chatConfig.enabled && transportState.requestedMode !== "twitch" && (chatConfig.localWsEnabled || explicitLocalMode);
+}
+
+function canUseHostedTransport() {
+  return chatConfig.enabled && transportState.requestedMode !== "local" && Boolean(chatConfig.hostedEventsUrl);
 }
 
 function isLocalDevRelayMode() {
@@ -528,6 +536,11 @@ function beginTransportBootstrap() {
     return;
   }
 
+  if (transportState.requestedMode === "hosted") {
+    connectHostedEventStream();
+    return;
+  }
+
   if (bindTwitchTransport()) {
     return;
   }
@@ -546,6 +559,11 @@ function beginTransportBootstrap() {
       clearTransportTimer("bootstrapTimer");
       if (transportState.requestedMode === "twitch") {
         setTransportState({ activeSource: "twitch", status: "error", lastError: "No context" });
+        return;
+      }
+
+      if (canUseHostedTransport()) {
+        connectHostedEventStream();
         return;
       }
 
@@ -1852,6 +1870,59 @@ function processChatParticipation(username, messageText) {
 }
 
 function connectLocalChatSocket() {
+
+  function scheduleHostedEventsReconnect() {
+    if (!canUseHostedTransport() || hostedEventsRetryTimer) {
+      return;
+    }
+
+    hostedEventsRetryTimer = setTimeout(() => {
+      hostedEventsRetryTimer = null;
+      connectHostedEventStream();
+    }, 2500);
+  }
+
+  function connectHostedEventStream() {
+    if (!canUseHostedTransport()) {
+      return;
+    }
+
+    if (hostedEventStream && hostedEventStream.readyState !== EventSource.CLOSED) {
+      return;
+    }
+
+    try {
+      hostedEventStream = new EventSource(chatConfig.hostedEventsUrl);
+    } catch (_error) {
+      setTransportState({ activeSource: "hosted", status: "error", lastError: "Connect failed" });
+      scheduleHostedEventsReconnect();
+      return;
+    }
+
+    hostedEventStream.onopen = () => {
+      setTransportState({ activeSource: "hosted", status: "waiting", lastError: "" });
+      addEventLog("Hosted relay linked.");
+    };
+
+    hostedEventStream.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        noteTransportActivity("hosted", payload);
+        handleOverlayPayload(payload);
+      } catch (_error) {
+        // Ignore malformed hosted payloads.
+      }
+    };
+
+    hostedEventStream.onerror = () => {
+      if (hostedEventStream) {
+        hostedEventStream.close();
+      }
+      hostedEventStream = null;
+      setTransportState({ activeSource: "hosted", status: "stale", lastError: "Reconnect" });
+      scheduleHostedEventsReconnect();
+    };
+  }
   if (!canUseLocalTransport()) return;
 
   if (chatLocalSocket && (chatLocalSocket.readyState === WebSocket.OPEN || chatLocalSocket.readyState === WebSocket.CONNECTING)) {
